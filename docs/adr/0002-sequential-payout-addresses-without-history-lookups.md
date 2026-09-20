@@ -1,0 +1,3 @@
+# Allocate payout addresses when an attempt starts, without history lookups
+
+Sats on Ice persists each identity's next payout index, initially zero, and advances it when a payout attempt starts, without waiting for payment confirmation or checking address history or account reuse. Owners are advised to supply a fresh extended public key dedicated to this service; failed attempts can leave gaps, and Sats on Ice cannot detect addresses used by another application. This chooses optimistic payout initiation without a Bitcoin history service: Coco handles recovery within its persisted operation lifecycle, while additional application-level payout recovery is deferred.
