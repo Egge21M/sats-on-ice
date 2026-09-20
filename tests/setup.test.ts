@@ -55,6 +55,23 @@ describe("local setup", () => {
     }
   });
 
+  test.each(["https://mint.example", "https://mint.example/cashu"])("repeated setup preserves state with trailing slashes on %s", async (mintUrl) => {
+    const input = { ...SETUP, mintUrl: `${mintUrl}///` };
+    const result = await setupInstance(path, input);
+    const digest = seedDigest();
+    expect(result.config.mintUrl).toBe(mintUrl);
+    expect(await setupInstance(path, input)).toEqual({ ...result, created: false });
+    expect(await setupInstance(path, { ...SETUP, mintUrl })).toEqual({ ...result, created: false });
+    expect(await verifyInstance(path)).toEqual({ ...result, created: false });
+    expect(seedDigest()).toBe(digest);
+    const connection = openDatabase(path, false);
+    try {
+      expect(connection.db.select().from(settings).where(eq(settings.key, "mintUrl")).get()?.value).toBe(JSON.stringify(mintUrl));
+    } finally {
+      connection.close();
+    }
+  });
+
   test("rejects conflicting setup without changing seed, identity, mint or index", async () => {
     await setupInstance(path, SETUP);
     const digest = seedDigest();

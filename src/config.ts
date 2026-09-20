@@ -1,4 +1,3 @@
-import { normalizeMintUrl } from "@cashu/coco-core";
 import { z } from "zod";
 import { derivePayoutAddress, normalizeDestinationKey } from "./destination.ts";
 
@@ -7,17 +6,18 @@ export const usernameSchema = z.string().regex(
   "Use 1–64 lowercase letters, digits, dots, underscores or hyphens, starting with a letter or digit.",
 );
 
-export const mintUrlSchema = z.string().transform((value, ctx) => {
-  try {
-    const url = new URL(value);
-    if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
-      throw new Error();
-    }
-    return normalizeMintUrl(url.href);
-  } catch {
+export const mintUrlSchema = z.url({
+  protocol: /^https?$/,
+  normalize: true,
+  error: "Use an absolute HTTP(S) mint URL without credentials, query or fragment.",
+}).transform((value, ctx) => {
+  const url = new URL(value);
+  if (url.username || url.password || value.includes("?") || value.includes("#")) {
     ctx.addIssue({ code: "custom", message: "Use an absolute HTTP(S) mint URL without credentials, query or fragment." });
     return z.NEVER;
   }
+  // Remove every trailing slash so repeated validation and Coco agree on the mint.
+  return value.replace(/\/+$/, "");
 });
 
 export const destinationKeySchema = z.string().transform((value, ctx) => {
