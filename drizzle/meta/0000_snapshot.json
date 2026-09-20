@@ -1,0 +1,136 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "194d7333-98e2-4f77-b12f-b232b42c893b",
+  "prevId": "00000000-0000-0000-0000-000000000000",
+  "tables": {
+    "soi_identity": {
+      "name": "soi_identity",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "username": {
+          "name": "username",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "destination_key": {
+          "name": "destination_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "next_payout_index": {
+          "name": "next_payout_index",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        }
+      },
+      "indexes": {
+        "soi_identity_username_unique": {
+          "name": "soi_identity_username_unique",
+          "columns": [
+            "username"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "soi_identity_singleton": {
+          "name": "soi_identity_singleton",
+          "value": "\"soi_identity\".\"id\" = 1"
+        },
+        "soi_identity_index": {
+          "name": "soi_identity_index",
+          "value": "typeof(\"soi_identity\".\"next_payout_index\") = 'integer' AND \"soi_identity\".\"next_payout_index\" BETWEEN 0 AND 2147483648"
+        }
+      }
+    },
+    "soi_settings": {
+      "name": "soi_settings",
+      "columns": {
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "value": {
+          "name": "value",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "soi_settings_json": {
+          "name": "soi_settings_json",
+          "value": "json_valid(\"soi_settings\".\"value\")"
+        }
+      }
+    },
+    "soi_wallet_secret": {
+      "name": "soi_wallet_secret",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "seed": {
+          "name": "seed",
+          "type": "blob",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "soi_wallet_secret_singleton": {
+          "name": "soi_wallet_secret_singleton",
+          "value": "\"soi_wallet_secret\".\"id\" = 1"
+        },
+        "soi_wallet_secret_length": {
+          "name": "soi_wallet_secret_length",
+          "value": "typeof(\"soi_wallet_secret\".\"seed\") = 'blob' AND length(\"soi_wallet_secret\".\"seed\") = 64"
+        }
+      }
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "indexes": {}
+  }
+}
