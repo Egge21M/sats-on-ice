@@ -1,0 +1,3 @@
+# Let Fly control idle suspension and request-driven wake
+
+Fly Proxy controls suspension and wake with `auto_stop_machines = "suspend"`, `auto_start_machines = true`, and `min_machines_running = 0`; the application does not delay suspension until wallet operations finish. This reduces compute usage while accepting that ecash claiming and payout processing can pause until another incoming request or explicit wake, because payments sent directly to the mint do not wake Sats on Ice. Resume and cold-start handling must reconcile persisted Coco quotes and operations before relying on the current balance; warm-resume behavior requires verification and is not established by startup recovery alone.

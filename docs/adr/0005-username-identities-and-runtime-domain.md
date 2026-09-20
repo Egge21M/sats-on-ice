@@ -1,0 +1,3 @@
+# Configure one username and infer the domain at runtime
+
+A dedicated SQLite identity table holds the server's single configured username, destination xpub, and next payout index; v1 supports one identity rather than multiple username balances and destinations. The HTTPS reverse proxy preserves the public hostname in `Host`, from which the application derives the Lightning Address domain and builds public HTTPS callback URLs at runtime. This avoids a stored public-domain setting while retaining the username-to-destination mapping without the accounting and wallet-isolation decisions required by multiple receiving identities.
