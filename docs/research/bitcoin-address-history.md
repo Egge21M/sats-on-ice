@@ -4,6 +4,8 @@ Researched 2026-09-19. Scope: public-key address derivation, history lookup and 
 
 Product decision, 2026-09-19: Sats on Ice will derive payout addresses sequentially from persisted state and will not query address history or check account reuse. The history-service recommendations below document the investigated alternatives, not the selected architecture; see [the address-allocation decision](../adr/0002-sequential-payout-addresses-without-history-lookups.md).
 
+Implementation follow-up, 2026-09-20: [PR #9](https://github.com/Egge21M/sats-on-ice/pull/9) selects `@scure/bip32` 2.4.0 and `@scure/btc-signer` 2.4.1 for Bitcoin mainnet native SegWit account xpub/zpub validation and `/0/index` derivation. The [local setup design](../design/local-setup.md) records canonical xpub storage, address comparison and a preview that does not consume an index. No history client or payout allocator is implemented by this slice.
+
 ## Recommendation
 
 Use local address derivation plus an indexed Bitcoin history service. Electrum is suitable, but an Esplora HTTP endpoint is simpler if the application only needs to check whether an address has history. In TypeScript, `@scure/btc-signer/net.js` provides an `EsploraProvider` with a direct `txCount(address)` method. Plain Bun `fetch` also suffices. Prefer Electrum when persistent subscriptions or an existing Electrum server are useful. This recommendation follows the API capabilities below, rather than a benchmark.

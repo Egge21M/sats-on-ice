@@ -26,6 +26,8 @@ Setup displays the first receiving address at `/0/0`, the next payout index (ini
 
 The CLI generates one Cashu seed and persists it together with the configuration, identity and Coco repositories. Repeating setup with equivalent inputs reopens that state. Conflicting inputs are rejected; setup never replaces the seed, destination key, mint or index. Equivalent xpub/zpub encodings are stored as the same canonical xpub.
 
+Mint URLs are normalized before storage and comparison, including removal of all trailing slashes. For example, `https://MINT.example:443/cashu///` and `https://mint.example/cashu` identify the same configured mint on repeated setup.
+
 To reopen the stored setup without supplying those inputs again:
 
 ```sh
@@ -68,4 +70,4 @@ Tests use temporary real SQLite files and public BIP84 fixtures. They exercise s
 
 The CLI uses Coco's explicit `Manager` initialization path: `initializeCoco()` in the pinned version runs operation recovery even when watchers are disabled. The future server will own that active lifecycle. Coco is disposed before the caller-owned SQLite connection is closed.
 
-Domain terminology lives in [CONTEXT.md](CONTEXT.md), with design decisions in [docs/adr](docs/adr/). The project is available under the [MIT license](LICENSE).
+The [local setup design](docs/design/local-setup.md) records the selected dependency versions, validation and persistence boundaries, wallet lifecycle and verification limits. Domain terminology lives in [CONTEXT.md](CONTEXT.md), with design decisions in [docs/adr](docs/adr/). The project is available under the [MIT license](LICENSE).

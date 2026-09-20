@@ -25,6 +25,14 @@ _Avoid_: Deposit, on-chain payment
 **Cashu mint**:
 The single owner-configured service that issues the Cashu ecash accumulated by a Sats on Ice instance and redeems that ecash for a payout.
 
+**Cashu wallet**:
+The instance's single wallet holding ecash from its configured Cashu mint while awaiting payout.
+_Avoid_: Destination wallet, Bitcoin wallet
+
+**Cashu seed**:
+The secret from which the Cashu wallet derives its keys and deterministic ecash secrets, independent of the destination wallet's private keys.
+_Avoid_: Destination key, destination wallet seed
+
 **Accumulated balance**:
 The spendable Cashu ecash held by Sats on Ice from incoming payments while awaiting payout; ecash reserved for a pending payout is excluded.
 _Avoid_: Bitcoin wallet balance, on-chain balance
@@ -39,6 +47,10 @@ _Avoid_: Lightning payment, incoming payment
 **Destination wallet**:
 The owner's Bitcoin wallet associated with an identity, with payout addresses derived from the extended public key supplied for that identity.
 _Avoid_: Cashu wallet, mint wallet
+
+**Destination key**:
+The extended public key for an account in the destination wallet, from which payout addresses can be derived without authority to spend that wallet's bitcoin.
+_Avoid_: Cashu seed, private key
 
 **Payout address**:
 An on-chain Bitcoin receiving address in the destination wallet to which a payout is directed.
