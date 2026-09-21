@@ -56,6 +56,7 @@ export async function runCli(argv: string[]) {
         hostname: options.hostname,
         port,
         onStatus: (_status, message) => console.log(message),
+        onPayout: (message) => console.log(message),
       });
       console.log(`Listening on ${options.hostname}:${service.port}. The HTTPS proxy must preserve the public Host header.`);
       const shutdown = () => {

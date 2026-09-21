@@ -2,7 +2,7 @@
 
 A self-hosted, MIT-licensed Lightning Address service that accumulates payments as Cashu ecash and sweeps them to a Bitcoin wallet when a configured threshold is reached.
 
-Local setup, verification and Lightning Address receiving are implemented. Incoming payments accumulate as Cashu ecash; automatic on-chain payouts and Fly.io deployment remain subsequent slices. See the [v1 design](https://github.com/Egge21M/sats-on-ice/issues/1) and [receiving design and test evidence](docs/design/lightning-receiving.md).
+Local setup, verification, Lightning Address receiving and automatic on-chain payouts are implemented. Fly.io deployment and warm-resume handling remain subsequent slices. See the [v1 design](https://github.com/Egge21M/sats-on-ice/issues/1), [receiving evidence](docs/design/lightning-receiving.md) and [payout evidence](docs/design/threshold-payouts.md).
 
 ## Set up an instance
 
@@ -68,7 +68,7 @@ Coco watches payments and claims ecash using its persisted operation lifecycle. 
 bun run cli --database ./data/sats-on-ice.sqlite verify
 ```
 
-`verify` does not contact the mint or run a second payment processor. Stop the server with Ctrl-C or SIGTERM; it closes HTTP connections, waits for pending application handlers, and disposes Coco before closing SQLite. In-flight HTTP responses may be interrupted. Reopen with the same `serve` command to reconcile pending receiving operations. **Run only one active server against a database**; this is documented rather than enforced. Automatic payouts, processor-health gating and Fly warm-resume handling are outside this slice. Funds currently remain at the Cashu stage regardless of the configured threshold.
+`verify` does not contact the mint or run a second payment processor. Stop the server with Ctrl-C or SIGTERM; it closes HTTP connections, waits for pending application handlers, and disposes Coco before closing SQLite. In-flight HTTP responses may be interrupted. Reopen with the same `serve` command to reconcile pending receiving operations. **Run only one active server against a database**; this is documented rather than enforced. The server now automatically sweeps eligible spendable funds through the mint’s on-chain method. Processor-health gating and Fly warm-resume handling remain later work.
 
 For a repeatable walkthrough without funds or a Lightning node:
 
@@ -77,6 +77,24 @@ bun test tests/receiving.test.ts
 ```
 
 This runs a local HTTP mint fixture with real Cashu blind signatures, signed BOLT11 invoices, real SQLite persistence and Alby Lightning Tools 9.0.1 as the representative payer client. It verifies 21-sat receiving and reopening, and a 32-sat invoice paid while stopped and claimed once after restart. HTTPS proxy routing and Lightning settlement are simulated; this does not establish live-network routing or compatibility with every wallet. See the [receiving evidence](docs/design/lightning-receiving.md#verification-and-limits) for details.
+
+## Automatic payouts
+
+At startup and after an ecash claim or payout settlement, the server evaluates the stored threshold against spendable sats, excluding reserved proofs. At or above the threshold it allocates the next `/0/index` address, commits the incremented index, and requests an on-chain sweep quote. Failed attempts can leave unused addresses; an allocated index is never rolled back.
+
+The sweep uses the available balance, deducts input fees and the lowest advertised fee reserve, and includes any required pre-swap costs. Fee options are selected by their advertised identifier. There is no separate application fee cap. Returned change and proof-selection remainders stay in the accumulated balance. Unsupported, out-of-range or unaffordable quotes are reported without a fallback payment route.
+
+The `serve` output includes the payout address, allocated index, recipient amount, selected reserve, Coco operation ID and subsequent pending/finalized state. A mint-reported outpoint does not establish Bitcoin confirmation. Coco owns preparation, reserved proofs, execution and settlement. New receipts may trigger a separate payout while another remains pending; initiation is serialized within the one server process. `verify` remains offline and reports spendable balance and next index; richer management is issue #5.
+
+A failed attempt is not retried continuously against the same proofs. A new receipt, settlement or restart can reevaluate the balance; the application never replays a possibly submitted withdrawal. Coco recovery can leave prepared operations reserved for an owner decision, and may retain unresolved operations after connectivity failures. This slice adds no recovery CLI. Keep the complete database and inspect persisted operations before taking recovery action.
+
+Run the controlled receiving-to-payout walkthrough with:
+
+```sh
+bun test tests/payouts.test.ts
+```
+
+It uses real Coco operations and Cashu proof verification, with simulated Bitcoin settlement and no real funds. See [payout design and evidence](docs/design/threshold-payouts.md). Fly suspension may defer all processing until a later request or explicit wake; warm-resume verification remains issue #8.
 
 ## Persistence
 

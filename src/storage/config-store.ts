@@ -3,11 +3,21 @@ import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { eq } from "drizzle-orm";
 import { storedConfigSchema, type SetupInput, type StoredConfig } from "../config.ts";
 import { UserError } from "../errors.ts";
+import { derivePayoutAddress } from "../destination.ts";
 import type { AppDatabase } from "./database.ts";
 import { identity, settings, walletSecret } from "./schema.ts";
 
 export class ConfigStore {
   constructor(private readonly db: AppDatabase) {}
+
+  /** Caller holds an IMMEDIATE transaction; commit before contacting the mint. */
+  allocatePayout() {
+    const row = this.db.select().from(identity).where(eq(identity.id, 1)).get();
+    if (!row) throw new UserError("Receiving identity is missing.");
+    const address = derivePayoutAddress(row.destinationKey, row.nextPayoutIndex);
+    this.db.update(identity).set({ nextPayoutIndex: row.nextPayoutIndex + 1 }).where(eq(identity.id, 1)).run();
+    return { address, index: row.nextPayoutIndex };
+  }
 
   load(): StoredConfig | null {
     const rows = this.db.select().from(settings).all();
