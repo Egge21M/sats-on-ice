@@ -21,6 +21,12 @@ export function openDatabase(path: string, create: boolean) {
   try {
     // Tighten permissions before putting secrets into the database or WAL.
     chmodSync(filename, 0o600);
+    for (const suffix of ["-wal", "-shm"]) {
+      try { chmodSync(`${filename}${suffix}`, 0o600); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
     sqlite = new Database(filename, { create: false, strict: true });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {

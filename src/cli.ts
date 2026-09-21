@@ -3,6 +3,7 @@ import { z } from "zod";
 import { thresholdArgumentSchema } from "./config.ts";
 import { UserError } from "./errors.ts";
 import { setupInstance, verifyInstance, type SetupSummary } from "./setup.ts";
+import { startReceivingServer } from "./server.ts";
 
 function printSummary(summary: SetupSummary) {
   const { config } = summary;
@@ -43,6 +44,31 @@ export async function runCli(argv: string[]) {
   program.command("verify")
     .description("Reopen stored setup and show its local spendable balance")
     .action(async () => printSummary(await verifyInstance(program.opts().database)));
+
+  program.command("serve")
+    .description("Serve the Lightning Address and claim incoming payments (one server per database)")
+    .option("--hostname <host>", "interface to bind; use 0.0.0.0 behind an HTTPS proxy", "127.0.0.1")
+    .option("--port <port>", "HTTP port (0 selects a free port)", "3000")
+    .action(async (options) => {
+      const port = z.string().regex(/^[0-9]+$/).transform(Number).pipe(z.number().int().min(0).max(65535)).parse(options.port);
+      const service = await startReceivingServer({
+        database: program.opts().database,
+        hostname: options.hostname,
+        port,
+        onStatus: (_status, message) => console.log(message),
+      });
+      console.log(`Listening on ${options.hostname}:${service.port}. The HTTPS proxy must preserve the public Host header.`);
+      const shutdown = () => {
+        process.off("SIGINT", shutdown);
+        process.off("SIGTERM", shutdown);
+        void service.stop().catch(() => {
+          console.error("Unable to shut down receiving cleanly. Reopen the saved wallet to reconcile pending payments.");
+          process.exitCode = 1;
+        });
+      };
+      process.on("SIGINT", shutdown);
+      process.on("SIGTERM", shutdown);
+    });
 
   try {
     await program.parseAsync(argv);

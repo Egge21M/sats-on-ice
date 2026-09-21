@@ -3,7 +3,7 @@ import { derivePayoutAddress } from "./destination.ts";
 import { UserError } from "./errors.ts";
 import { ConfigStore } from "./storage/config-store.ts";
 import { openDatabase } from "./storage/database.ts";
-import { openLocalWallet } from "./wallet.ts";
+import { assertConfiguredMint, openLocalWallet } from "./wallet.ts";
 
 export interface SetupSummary {
   created: boolean;
@@ -17,11 +17,7 @@ async function inspect(connection: ReturnType<typeof openDatabase>, store: Confi
   if (!config) throw new UserError("This database has not been set up. Run setup first.");
   const wallet = await openLocalWallet(connection.sqlite, async () => store.getSeed());
   try {
-    const mints = await wallet.mint.getAllMints();
-    const balances = await wallet.wallet.balances.byMintAndUnit();
-    if (mints.some((mint) => mint.mintUrl !== config.mintUrl) || Object.keys(balances).some((mint) => mint !== config.mintUrl)) {
-      throw new UserError("This wallet contains a different mint from its configured mint. Restore the matching application and wallet state.");
-    }
+    await assertConfiguredMint(wallet, config.mintUrl);
     const balance = await wallet.wallet.balances.total({ mintUrls: [config.mintUrl], units: ["sat"] });
     return {
       created,

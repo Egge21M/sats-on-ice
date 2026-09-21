@@ -2,6 +2,8 @@
 
 This document records the design implemented by [PR #9](https://github.com/Egge21M/sats-on-ice/pull/9), including its mint URL normalization fix, against [setup ticket #2](https://github.com/Egge21M/sats-on-ice/issues/2). The implementation provides local `setup` and `verify` commands for one owner, one identity and one configured Cashu mint. The [glossary](../../CONTEXT.md) defines the domain terms; the [README](../../README.md) provides the operator walkthrough.
 
+Subsequent receiving work is recorded in the [receiving design](lightning-receiving.md). It adds `serve` and active payment processing, and closes the baseline WAL/SHM permission gap described below by restricting existing sidecars before reopening the database. Statements below about future receiving work and the original permission limitation describe the PR #9 baseline.
+
 ## Dependencies
 
 These are the selected versions for this slice, not a claim about the latest available releases. [package.json](../../package.json) is authoritative for direct dependencies and the Bun version; [bun.lock](../../bun.lock) records the resolved dependency graph. Install with `bun install --frozen-lockfile`.

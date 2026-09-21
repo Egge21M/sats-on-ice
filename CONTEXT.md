@@ -22,6 +22,15 @@ A human-readable `username@domain` payment identifier for an identity, through w
 A Lightning payment received through a Lightning Address and intended to become Cashu ecash held by Sats on Ice until payout.
 _Avoid_: Deposit, on-chain payment
 
+**Payer**:
+The person sending an incoming payment to the owner's Lightning Address.
+
+**Receiving invoice**:
+A mint-issued Lightning invoice for an incoming payment. Payment of the invoice does not by itself mean the owner holds spendable Cashu ecash.
+
+**Ecash claim**:
+The issuance of locally held Cashu ecash against a paid receiving invoice, making the received funds available to the owner's accumulated balance.
+
 **Cashu mint**:
 The single owner-configured service that issues the Cashu ecash accumulated by a Sats on Ice instance and redeems that ecash for a payout.
 
