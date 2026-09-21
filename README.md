@@ -52,13 +52,15 @@ Put an HTTPS reverse proxy in front of this HTTP listener. Preserve the public `
 
 The server checks fresh mint information for enabled `bolt11` receiving and `onchain` payouts in `sat`, including valid limits for both. An incompatible mint fails the initial start. Temporary connectivity/startup failures leave the HTTP service running but payment endpoints return an LNURL error with HTTP 503; validation retries every five seconds. An incompatible mint discovered on a retry stays unready until restart. CLI output distinguishes these states. Capability readiness does not assert that every pending invoice has been claimed or that the processor remains healthy.
 
+Known limitation accepted for this slice: the fresh startup check does not refresh Coco's separate five-minute mint-information cache. After a mint changes its amount limits, a restart can advertise the new range while invoice creation still rejects newly allowed amounts with HTTP 502 until Coco refreshes its cache. Discovery retains the limits from startup; later mint changes are not automatically reflected there. See the [receiving design](docs/design/lightning-receiving.md#confirmed-implementation-constraints).
+
 The only public routes are `GET /.well-known/lnurlp/alice` and its advertised callback, `GET /lnurlp/alice/callback`. To inspect discovery locally through the expected proxy headers:
 
 ```sh
 curl -H 'Host: pay.example' http://127.0.0.1:3000/.well-known/lnurlp/alice
 ```
 
-Once the proxy is configured, enter `alice@pay.example` in a compatible payer wallet, choose an amount within the advertised range, and pay its invoice. The callback accepts integer millisatoshis representing whole sats, rejects fractional sats without rounding, and saves the quote and issuance state before returning the invoice. Each callback creates a fresh invoice, including retries for the same amount. The server validates the encoded invoice amount, Bitcoin mainnet network and expiry; the payer remains responsible for full Lightning invoice validation.
+Once the proxy is configured, enter `alice@pay.example` in a compatible payer wallet, choose an amount within the advertised range, and pay its invoice. The callback accepts integer millisatoshis representing whole sats, rejects fractional sats without rounding, and saves the quote and issuance state before returning the invoice. Each successful callback returns a fresh receiving invoice, including retries for the same amount. The server validates the encoded invoice amount, Bitcoin mainnet network and expiry; the payer remains responsible for full Lightning invoice validation.
 
 Coco watches payments and claims ecash using its persisted operation lifecycle. Claiming can lag payment observation by the subscription polling interval (the pinned library defaults are five seconds for fast polling and twenty seconds for backup polling), network latency and mint request throttling. An unpaid invoice contributes nothing to the balance; a paid invoice contributes only after local ecash issuance. Inspect the locally held balance from another terminal:
 
@@ -66,7 +68,7 @@ Coco watches payments and claims ecash using its persisted operation lifecycle. 
 bun run cli --database ./data/sats-on-ice.sqlite verify
 ```
 
-`verify` does not contact the mint or run a second payment processor. Stop the server with Ctrl-C or SIGTERM; it drains application requests and disposes Coco before closing SQLite. Reopen with the same `serve` command to reconcile pending receiving operations. **Run only one active server against a database**; this is documented rather than enforced. Automatic payouts, processor-health gating and Fly warm-resume handling are outside this slice. Funds currently remain at the Cashu stage regardless of the configured threshold.
+`verify` does not contact the mint or run a second payment processor. Stop the server with Ctrl-C or SIGTERM; it closes HTTP connections, waits for pending application handlers, and disposes Coco before closing SQLite. In-flight HTTP responses may be interrupted. Reopen with the same `serve` command to reconcile pending receiving operations. **Run only one active server against a database**; this is documented rather than enforced. Automatic payouts, processor-health gating and Fly warm-resume handling are outside this slice. Funds currently remain at the Cashu stage regardless of the configured threshold.
 
 For a repeatable walkthrough without funds or a Lightning node:
 
