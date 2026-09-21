@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { Amount, type CoreProof } from "@cashu/coco-core";
 import { SqliteRepositories } from "@cashu/coco-sqlite-bun";
 import { HDKey } from "@scure/bip32";
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -31,6 +31,20 @@ function seedDigest(): string {
 }
 
 describe("local setup", () => {
+  test("tightens existing WAL and SHM permissions before reopening wallet state", async () => {
+    await setupInstance(path, SETUP);
+    const held = openDatabase(path, false);
+    try {
+      held.sqlite.query("SELECT * FROM soi_identity").all();
+      for (const suffix of ["-wal", "-shm"]) {
+        expect(existsSync(`${path}${suffix}`)).toBe(true);
+        chmodSync(`${path}${suffix}`, 0o666);
+      }
+      expect((await verifyInstance(path)).accumulatedBalanceSats).toBe("0");
+      for (const suffix of ["", "-wal", "-shm"]) expect(statSync(`${path}${suffix}`).mode & 0o777).toBe(0o600);
+    } finally { held.close(); }
+  });
+
   test("creates zero-balance setup offline, reopens it, and never consumes the preview index", async () => {
     const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(
       () => { throw new Error("Unexpected network access"); },

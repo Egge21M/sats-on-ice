@@ -1,0 +1,61 @@
+# Lightning Address receiving
+
+Implementation and design decisions for [receiving issue #3](https://github.com/Egge21M/sats-on-ice/issues/3), following the owner interview on 2026-09-20. Receiving is verified against a controlled mint and named payer client below; live Lightning routing and Fly deployment remain unverified.
+
+## Agreed receiving behavior
+
+- Establish compatibility with one named, tested mint and representative payer implementation. Record versions, invoice amount and LNURL metadata compatibility, limitations, and reproduction steps. The tested pair is recorded below; do not infer general wallet compatibility or weaken payer validation to pass the check.
+- Each successful LNURL-pay callback creates a fresh persisted mint quote and its required issuance state before the receiving invoice is returned. Validation, mint or persistence failures return an error without an invoice. A repeated request is not deduplicated by amount or payer IP. Previously returned invoices remain independently claimable if paid, including when a payer retries after losing an HTTP response.
+- Public HTTP routes are limited to LUD-16 Lightning Address discovery and its LNURL-pay callback. Do not add public balance, payment-status, management, or standalone health endpoints in this slice. Owner balance inspection remains in the CLI.
+- Handling an impaired claiming processor, including application-level health detection and gating new invoices on that health, is outside this slice. The owner's scope correction supersedes the interview's proposed processor-health readiness gate.
+- Startup validation of the mint's required receiving and on-chain payout capabilities and amount limits remains required. Incompatible configuration is rejected; temporary mint-connectivity failures leave payment endpoints unready and trigger automatic validation retries, as specified in issue #3. Deferring impaired-processor handling does not remove quote persistence, ordinary Coco claiming, or the required cold-start receiving checks.
+- Run only one active server against a database. Document this operating requirement without adding process-ownership enforcement in this slice; local CLI inspection remains supported. See [ADR 0003](../adr/0003-bun-and-local-sqlite.md).
+
+The [glossary](../../CONTEXT.md) distinguishes a receiving invoice, an ecash claim, and accumulated balance. Paying an invoice and obtaining locally spendable ecash are separate events; repeated observations must not credit the same payment twice.
+
+## Confirmed implementation constraints
+
+The installed Coco 2.0.0 `MintQuoteApi.create` BOLT11 input and implementation accept an amount, unit, and optional quote locking, but do not forward a description or description hash. This alone is not a protocol incompatibility or a reason to require a Coco change: current [LUD-06](https://github.com/lnurl/luds/blob/luds/06.md) no longer requires invoice description-hash binding to LNURL metadata. The [removal commit](https://github.com/lnurl/luds/commit/30339780e8f709b839b639c65a50ff99f8a0abcb) explicitly removes that check. LNURL discovery still supplies metadata, and the payer must verify the invoice amount. [NUT-23](https://github.com/cashubtc/nuts/blob/main/23.md) makes the mint-quote description optional. These protocol facts were verified on 2026-09-20; the tested mint/payer response compatibility is recorded below.
+
+Coco persists quote creation and operation preparation separately. Prepare the issuance operation successfully before exposing its invoice. Coco's relevant operation locks are process-local; the existing one-server decision in [ADR 0003](../adr/0003-bun-and-local-sqlite.md) does not itself enforce exclusive ownership across processes.
+
+The fresh startup capability check and Coco's mint-information cache are separate. In pinned Coco 2.0.0, `wallet.mint.addMint()` can reuse persisted metadata for five minutes, and quote creation checks amounts against that metadata. The application does not force a refresh or copy its freshly fetched metadata into Coco. For example, if the mint lowers its minimum from 100 sats to 1 sat and the server restarts within the cache lifetime, discovery advertises 1 sat while a 1-sat callback returns HTTP 502 before requesting a quote from the mint. This mismatch was reproduced during review on 2026-09-21 and accepted for this slice; forced refresh is deferred. Restarting alone does not invalidate Coco's cache. Discovery and application amount validation also retain the startup limits until the next server restart, independently of Coco's later refreshes.
+
+## Implementation
+
+`src/server.ts` owns the HTTP service, configuration snapshot, startup retry and shutdown lifecycle. `src/mint-capabilities.ts` fetches fresh NUT-04/NUT-05 metadata rather than relying on Coco's cached mint information. It checks enabled BOLT11 receiving and on-chain melting in sats, validates their amount ranges, and bounds receiving at `floor(Number.MAX_SAFE_INTEGER / 1000)` sats so LNURL JSON millisatoshi values remain exact. Missing/null maxima use the application's representable bound. Payout limits are checked independently; receiving is not capped by an individual on-chain payout's limit.
+
+Discovery matches the exact configured username and returns one `text/plain` metadata entry, public HTTPS callback and mint receiving limits. Only the discovery and callback paths exist. Both use uncached JSON responses with permissive CORS for public payer clients. Malformed Host headers, unknown usernames and invalid amounts are rejected without creating mint quotes. Forwarded-host headers do not override the preserved `Host`.
+
+`src/receiving-wallet.ts` reopens the persisted seed and shared repositories, refuses other-mint wallet state, registers/trusts the configured mint, reconciles legacy quotes, enables Coco's mint watcher and processor, and runs pending mint-operation recovery. It deliberately owns a `Manager` instance so partial startup can be disposed before retrying. Setup/verify remain observational with respect to payments.
+
+The callback persists a Coco quote, decodes the actual BOLT11 invoice with pinned `light-bolt11-decoder` 3.2.0, checks its exact amount, mainnet network and expiry (including BOLT11's default expiry), then prepares the durable issuance operation before returning its invoice. The decoder does not verify signatures; this does not replace payer validation. Failed preparation returns a generic error without invoice or library/SQL details. Coco's normal quote claiming remains enabled; the application does not implement a second credit ledger or manual issuance retries.
+
+The HTTP service remains unready until capability validation and receiving startup finish. Transient startup errors retry after five seconds; the direct metadata request has a ten-second timeout. Incompatible metadata on the first attempt fails `serve`; an incompatibility discovered during retry stops retries and keeps the listener unready for operator diagnosis. After startup, callback failures return HTTP 502 without adding the deferred processor-health gate. Network calls made inside Coco use Coco's transport; this slice does not add independent cancellation/deadlines to those calls.
+
+Shutdown closes HTTP connections with `server.stop(true)`, cancels startup retries, waits for pending application handlers and disposes Coco before closing SQLite. Waiting for handlers protects the database lifecycle but does not guarantee delivery of their HTTP responses; a payer can retry a lost response and receive a separate invoice as described above. There is no cross-process server lock. The database opener now also tightens pre-existing WAL/SHM permissions, resolving the known setup-baseline limitation before receiving wallet secrets.
+
+## Verification and limits
+
+Run `bun install --frozen-lockfile`, `bun run typecheck`, `bun test` and `bun run build`. The receiving walkthrough is independently reproducible with `bun test tests/receiving.test.ts`; it needs permission to bind loopback ports, but no credentials, external mint, Lightning node or funds.
+
+| Component | Tested version / role |
+| --- | --- |
+| Bun | 1.3.14 |
+| Coco core / Bun SQLite adapter | 2.0.0 / 2.0.0, actual persistence and processing |
+| Controlled mint | SOI fixture v1 in `tests/mint-fixture.ts` |
+| Cashu mint cryptography | `@cashu/cashu-ts` 5.0.0-rc.4, deterministic test keys and real blind signatures |
+| Invoice signer / independent decoder | `bolt11` 1.4.1 |
+| Representative LNURL payer | `@getalby/lightning-tools` 9.0.1, `LightningAddress.fetch()` and `requestInvoice()` |
+
+The payer test passes the service's unmodified discovery and invoice responses to Alby, checks its parsed 21-sat invoice and metadata, simulates settlement at the mint, then observes 21 sats of locally spendable ecash. The invoice carries the mint's ordinary plain description and no metadata-bound description hash. No incompatibility was observed for this pair. Alby's client parses the returned invoice but does not itself compare its amount with the request; the integration assertion and the server's mismatch-rejection test check that boundary explicitly. No payer validation is disabled.
+
+The fixture serves real mint HTTP endpoints, creates signed invoices, signs blinded outputs, rejects unpaid/double issuance, supports restore and proof-state checks, and allows the test to verify unblinded proof signatures against its keys. It advertises on-chain payout capability for startup checks; it does not implement an on-chain backend. The test proxy redirects only the synthetic `https://pay.example` origin to the local service while preserving its Host header. Lightning routing/settlement and public TLS are simulated, so the result establishes this payer library's response compatibility and the receiving lifecycle, not a live payment or wallet-UI claim.
+
+Checks cover valid min/max amounts, identical repeated requests producing separate invoices, invalid/fractional/duplicate amount parameters, unknown usernames, public Host behavior, unsupported mint methods/units/limits, rejection of freshly disabled capabilities despite cached metadata, automatic connectivity retry, retry cancellation, refusal of a mismatched invoice, refusal to expose an invoice on a persistence failure, unpaid balance, real spendable proofs, seed/balance preservation, and a 32-sat invoice paid while stopped and claimed exactly once after reopening. The cached-capability test does not establish that Coco's amount limits match discovery after a mint changes them; the accepted mismatch is described above. The CLI subprocess check runs receiving with production polling defaults and stops on SIGTERM before reopening the database. Coco may defer payment observation until its polling interval; tests using shorter timings do not establish immediate production claiming.
+
+Validation on 2026-09-20: all 78 tests passed (261 assertions), typechecking and the Bun build passed, and a frozen-lockfile install made no dependency changes. An additional smoke check copied the bundle and its migrations to an isolated directory, ran bundled setup and receiving, paid a 21-sat invoice at the fixture while the server was stopped, restarted the bundled server, and verified one issuance and a persisted 21-sat balance. Both bundled server runs shut down successfully on SIGTERM.
+
+Runtime processor impairment handling and Fly warm-resume reconciliation remain explicitly deferred. A successful startup recovery call is not a guarantee that every pending operation was reconciled; local `verify` displays locally recorded spendable ecash.
+
+Threshold payouts, Fly deployment and warm-resume handling remain later issues. The [local setup design](local-setup.md) describes the implemented baseline and its verification limits.

@@ -24,6 +24,7 @@ test("help, setup and verify work from another directory and exit without backgr
   expect(help.code).toBe(0);
   expect(help.stdout).toContain("setup");
   expect(help.stdout).toContain("verify");
+  expect(help.stdout).toContain("serve");
   const path = join(directory, "owner.sqlite");
   const setup = await cli("--database", path, "setup", "--username", "alice", "--mint", "https://mint.example", "--xpub", ZPUB, "--threshold", "100000");
   expect(setup.code).toBe(0);
@@ -51,4 +52,13 @@ test("invalid setup exits nonzero without echoing key material or library traces
   expect(result.stderr).toContain("Invalid configuration");
   expect(result.stderr.includes(badKey)).toBe(false);
   expect(result.stdout).toBe("");
+});
+
+test("serve rejects invalid ports and missing setup without creating a database", async () => {
+  for (const port of ["-1", "65536", "3000oops", "1.5"]) {
+    expect((await cli("serve", "--port", port)).code).toBe(1);
+  }
+  const missing = await cli("serve");
+  expect(missing.code).toBe(1);
+  expect(missing.stderr).toContain("Run setup first");
 });

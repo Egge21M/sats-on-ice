@@ -16,11 +16,20 @@ _Avoid_: User, tenant, alias
 The configured name before `@` in the server's Lightning Address.
 
 **Lightning Address**:
-A human-readable `username@domain` payment identifier for an identity, through which a sender can request a Lightning invoice using LNURL-pay.
+A human-readable `username@domain` payment identifier for an identity, through which a payer can request a receiving invoice using LNURL-pay.
 
 **Incoming payment**:
 A Lightning payment received through a Lightning Address and intended to become Cashu ecash held by Sats on Ice until payout.
 _Avoid_: Deposit, on-chain payment
+
+**Payer**:
+The person sending an incoming payment to the owner's Lightning Address.
+
+**Receiving invoice**:
+A mint-issued Lightning invoice for an incoming payment. Payment of the invoice does not by itself mean the owner holds spendable Cashu ecash.
+
+**Ecash claim**:
+The issuance of locally held Cashu ecash against a paid receiving invoice, making the received funds available to the owner's accumulated balance.
 
 **Cashu mint**:
 The single owner-configured service that issues the Cashu ecash accumulated by a Sats on Ice instance and redeems that ecash for a payout.
@@ -34,7 +43,7 @@ The secret from which the Cashu wallet derives its keys and deterministic ecash 
 _Avoid_: Destination key, destination wallet seed
 
 **Accumulated balance**:
-The spendable Cashu ecash held by Sats on Ice from incoming payments while awaiting payout; ecash reserved for a pending payout is excluded.
+The spendable Cashu ecash held by Sats on Ice from incoming payments while awaiting payout; ecash reserved for a pending payout is excluded. Unpaid receiving invoices and paid receiving invoices awaiting an ecash claim contribute nothing to this balance.
 _Avoid_: Bitcoin wallet balance, on-chain balance
 
 **Payout threshold**:
