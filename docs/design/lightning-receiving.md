@@ -64,4 +64,4 @@ Startup regression checks cover a fresh env-configured server without prior setu
 
 Runtime processor impairment handling and Fly warm-resume reconciliation remain explicitly deferred. A successful startup recovery call is not a guarantee that every pending operation was reconciled; local `verify` displays locally recorded spendable ecash.
 
-Threshold payouts are implemented and documented in the [payout design](threshold-payouts.md). The [Fly deployment guide](fly-deployment.md) covers container packaging, persistent bootstrap and its controlled verification; warm-resume handling remains issue #8. The [local setup design](local-setup.md) describes the implemented baseline and its verification limits.
+Threshold payouts are implemented and documented in the [payout design](threshold-payouts.md). The [Fly deployment guide](fly-deployment.md) covers container packaging, persistent bootstrap and its controlled verification; the [resume guide](payment-resume.md) covers warm-resume reconciliation and interrupted payments. The [local setup design](local-setup.md) describes the implemented baseline and its verification limits.

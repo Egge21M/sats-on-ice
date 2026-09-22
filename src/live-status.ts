@@ -6,8 +6,9 @@ import { activeConfigSchema } from "./config.ts";
 const liveStatusSchema = z.object({
   startedAt: z.string(), observedAt: z.string(),
   config: activeConfigSchema.omit({ nextPayoutIndex: true }),
-  readiness: z.enum(["validating", "retrying", "ready", "incompatible", "stopped"]),
+  readiness: z.enum(["validating", "retrying", "reconciling", "ready", "incompatible", "stopped"]),
   readinessObservedAt: z.string(), message: z.string(),
+  lastReconciledAt: z.string().nullable(),
   lastPayout: z.object({ observedAt: z.string(), message: z.string() }).nullable(),
   lastInvoiceError: z.object({ observedAt: z.string(), message: z.string() }).nullable(),
 });
@@ -15,7 +16,7 @@ export type LiveStatus = z.infer<typeof liveStatusSchema>;
 
 function socketPath(database: string) { return `${realpathSync(database)}.status/server.sock`; }
 
-/** One response per connection; no commands and no mint requests. */
+/** One snapshot per connection; the client cannot issue commands. */
 export async function serveLiveStatus(database: string, snapshot: () => LiveStatus) {
   const path = socketPath(database);
   const directory = `${realpathSync(database)}.status`;
@@ -40,7 +41,9 @@ export async function serveLiveStatus(database: string, snapshot: () => LiveStat
   const server = createServer((socket) => {
     socket.on("error", () => {});
     socket.setTimeout(1000, () => socket.destroy());
-    socket.end(JSON.stringify(snapshot()));
+    // Wait for the client to finish connecting before sending and closing.
+    // Bun 1.3.14 can report ECONNREFUSED if the peer closes during connect.
+    socket.once("data", () => socket.end(JSON.stringify(snapshot())));
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -71,6 +74,7 @@ export async function readLiveStatus(database: string): Promise<LiveStatus | nul
         finish(parsed.success ? parsed.data : null);
       } catch { finish(null); }
     });
+    socket.once("connect", () => socket.write("\n"));
     socket.connect(path);
   });
 }

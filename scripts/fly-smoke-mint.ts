@@ -23,6 +23,16 @@ const server = Bun.serve({
         return Response.json({ issuanceCount: mint.state.issuanceCount, meltRequests: mint.state.meltRequests,
           payouts: [...mint.melts.values()].map(({ request, state }) => ({ address: request, state })) });
       }
+      if (url.pathname === "/__test/pending-payouts" && request.method === "POST") {
+        const { enabled } = await request.json() as { enabled: unknown };
+        if (typeof enabled !== "boolean") return new Response(null, { status: 400 });
+        mint.state.pendingPayouts = enabled;
+        return Response.json({ enabled });
+      }
+      if (url.pathname === "/__test/settle" && request.method === "POST") {
+        for (const { quote } of mint.submissions) if (quote.state === "PENDING") mint.settle(quote.quote);
+        return Response.json({ settled: true });
+      }
       return new Response(null, { status: 404 });
     }
     return fetch(`${mint.url}${url.pathname}${url.search}`, {

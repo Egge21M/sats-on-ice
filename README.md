@@ -2,7 +2,7 @@
 
 A self-hosted, MIT-licensed Lightning Address service that accumulates payments as Cashu ecash and sweeps them to a Bitcoin wallet when a configured threshold is reached.
 
-Local setup, wallet status, complete database backups, Lightning Address receiving and automatic on-chain payouts are implemented. A Docker image and single-Machine Fly.io configuration are included; payment correctness across warm resume remains issue #8. See the [v1 design](https://github.com/Egge21M/sats-on-ice/issues/1), [receiving evidence](docs/design/lightning-receiving.md) and [payout evidence](docs/design/threshold-payouts.md).
+Local setup, wallet status, complete database backups, Lightning Address receiving and automatic on-chain payouts are implemented. The included Docker image and single-Machine Fly.io configuration support payment reconciliation after restart and detected process pauses. See the [v1 design](https://github.com/Egge21M/sats-on-ice/issues/1), [receiving evidence](docs/design/lightning-receiving.md) and [payout evidence](docs/design/threshold-payouts.md).
 
 ## Configure and start an instance
 
@@ -43,7 +43,7 @@ Run `bun run cli --database ./data/sats-on-ice.sqlite status` on the database ho
 
 - The last active identity in SQLite, its destination and next payout index.
 - The identity, mint and threshold selected by this command's environment for a future start. A new identity is shown as uncreated. Status does not activate it.
-- A responding server's captured configuration, startup readiness and latest payout/invoice diagnostic, with observation times. Environment changes take effect only when that server restarts.
+- A responding server's captured configuration, readiness, last successful reconciliation and latest payout/invoice diagnostic, with observation times. Environment changes take effect only when that server restarts.
 - Spendable sats at the environment-selected mint, funds reserved in pending payouts, other unavailable funds, and separately listed balances and operations at other recorded mints. Balances are never assigned to identities.
 
 Each payout shows its local Coco state, recorded destination, mint quote state and transaction outpoint where available. A pending payout is distinct from a finalized operation. **An outpoint indicates broadcast, not confirmation.** Coco 2.0 exposes no Bitcoin confirmation state; status explicitly reports that information as unavailable. Errors recorded by Coco are flagged without printing raw library errors, which can contain secrets. The running server's safe diagnostic messages provide additional context.
@@ -52,7 +52,7 @@ Status opens SQLite read-only and reads a consistent local snapshot. It generate
 
 For live information, `serve` exposes a private Unix socket under `<canonical database path>.status/server.sock`, inside a directory accessible only to the owner (`0700`). Run status as the same OS user, against the same mounted database and socket directory. This adds no public HTTP route. A missing, inaccessible or unresponsive socket produces **readiness unavailable**; it does not prove that the server is stopped. Servers started before this feature need a restart to expose live information. The socket directory is disposable runtime state and is not part of a wallet backup.
 
-Even when the server responds, readiness describes its startup capability check, not a fresh mint probe or a guarantee of processor health. Local wallet records may lag the mint. Fly suspension can defer ecash claims and payouts until a request or explicit wake; status does not wake Fly or reconcile payments. A successful local command does not establish payment readiness. Keep one active server per database.
+Readiness records capability validation and payment reconciliation after startup or a detected process pause; it is not a fresh mint probe or a continuous processor-health guarantee. Local wallet records may lag the mint. Fly suspension can defer ecash claims and payouts until a request or explicit wake. Offline status does not wake Fly or reconcile payments; a live request can let the existing server detect a pause. A successful local command does not establish payment readiness. Keep one active server per database.
 
 The [status design and walkthrough](docs/design/wallet-status.md) describes inspection during pending payouts, mint failures and environment changes.
 
@@ -66,7 +66,7 @@ bun run cli --database ./data/sats-on-ice.sqlite serve --hostname 127.0.0.1 --po
 
 Put an HTTPS reverse proxy in front of this HTTP listener. Preserve the public `Host` header, for example `pay.example`, so the configured username `alice` resolves as `alice@pay.example`. Bind `0.0.0.0` when the proxy reaches the server through a container network. The default bind address is `127.0.0.1`; `--port 0` selects a free port. No public domain is stored and forwarded-host headers are not used.
 
-The server checks fresh mint information for enabled `bolt11` receiving and `onchain` payouts in `sat`, including valid limits for both. An incompatible mint fails the initial start. Temporary connectivity/startup failures leave the HTTP service running but payment endpoints return an LNURL error with HTTP 503; validation retries every five seconds. An incompatible mint discovered on a retry stays unready until restart. CLI output distinguishes these states. Capability readiness does not assert that every pending invoice has been claimed or that the processor remains healthy.
+The server checks fresh mint information for enabled `bolt11` receiving and `onchain` payouts in `sat`, including valid limits for both. An incompatible mint fails the initial start. Temporary connectivity/startup failures leave the HTTP service running but payment endpoints return an LNURL error with HTTP 503; validation retries every five seconds. An incompatible mint discovered on a retry stays unready until restart. CLI output distinguishes these states. Readiness also requires reconciliation of pending quotes and in-flight payments through Coco. After a detected process pause, the existing manager reconciles before new invoices or sweeps are allowed. Unpaid invoices and remotely pending payouts can remain pending. The [resume guide](docs/design/payment-resume.md) covers failure feedback, repeatable checks and limitations.
 
 Known limitation accepted for this slice: the fresh startup check does not refresh Coco's separate five-minute mint-information cache. After a mint changes its amount limits, a restart can advertise the new range while invoice creation still rejects newly allowed amounts with HTTP 502 until Coco refreshes its cache. Discovery retains the limits from startup; later mint changes are not automatically reflected there. See the [receiving design](docs/design/lightning-receiving.md#confirmed-implementation-constraints).
 
@@ -110,13 +110,13 @@ Run the controlled receiving-to-payout walkthrough with:
 bun test tests/payouts.test.ts
 ```
 
-It uses real Coco operations and Cashu proof verification, with simulated Bitcoin settlement and no real funds. See [payout design and evidence](docs/design/threshold-payouts.md). Fly suspension may defer all processing until a later request or explicit wake; warm-resume verification remains issue #8.
+It uses real Coco operations and Cashu proof verification, with simulated Bitcoin settlement and no real funds. See [payout design and evidence](docs/design/threshold-payouts.md). Fly suspension may defer all processing until a later request or explicit wake; see the [resume guide](docs/design/payment-resume.md) for warm-resume and interrupted-payout checks.
 
 ## Deploy on Fly.io
 
 Use the pinned [Dockerfile](Dockerfile) and copy [fly.toml](fly.toml) to `fly.local.toml`. Set your app name, region and runtime environment, create one `soi_data` volume, and deploy with `--ha=false`. The server initializes `/data/sats-on-ice.sqlite` on the mounted Machine; no setup command or release-time migration is required. Compare the first payout address using the on-volume CLI before receiving payments.
 
-The [Fly deployment guide](docs/design/fly-deployment.md) covers bootstrap, environment changes, readiness, local CLI commands, restart/redeploy verification and a controlled test mint. Keep one wallet Machine and one volume; this accepts downtime during deployments and host failures. Fly controls idle suspension and incoming-request wake. Payment work can wait while asleep, and warm-resume reconciliation remains a separate verification slice.
+The [Fly deployment guide](docs/design/fly-deployment.md) covers bootstrap, environment changes, readiness, local CLI commands, restart/redeploy verification and a controlled test mint. Keep one wallet Machine and one volume; this accepts downtime during deployments and host failures. Fly controls idle suspension and incoming-request wake. Payment work can wait while asleep. The [resume guide](docs/design/payment-resume.md) documents reconciliation, interrupted payouts and controlled Fly suspend/wake evidence.
 
 ## Persistence
 

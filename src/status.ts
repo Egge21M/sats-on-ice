@@ -113,7 +113,8 @@ export function formatStatus(status: WalletStatus): string {
       `  Readiness: ${live.readiness} (server observation ${live.readinessObservedAt}); ${safe(live.message)}`);
     if (live.lastInvoiceError) lines.push(`  Last invoice error (${live.lastInvoiceError.observedAt}): ${safe(live.lastInvoiceError.message)}`);
     if (live.lastPayout) lines.push(`  Last payout diagnostic (${live.lastPayout.observedAt}): ${safe(live.lastPayout.message)}`);
-    lines.push("  Readiness describes startup capability validation, not a fresh mint probe or processor-health guarantee.");
+    lines.push(`  Last successful payment reconciliation: ${live.lastReconciledAt ?? "not yet completed"}.`,
+      "  Readiness records capability validation and payment reconciliation; it is not a fresh probe or continuous processor-health guarantee.");
   } else {
     lines.push("Running server configuration and readiness: unavailable (no local status response).",
       "  Local records and this command's environment do not establish whether a server is running, stopped or suspended.");

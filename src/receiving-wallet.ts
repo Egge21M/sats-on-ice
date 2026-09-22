@@ -12,7 +12,7 @@ export async function openReceivingWallet(
   seedGetter: () => Promise<Uint8Array>,
   mintUrl: string,
   timing: { pollingIntervalMs?: number; processorIntervalMs?: number } = {},
-  payout?: { config: ActiveConfig; limits: AmountLimits; allocate: () => { address: string; index: number }; report: (message: string) => void },
+  payout?: { config: ActiveConfig; limits: AmountLimits; allocate: () => { address: string; index: number }; report: (message: string) => void; canInitiate: () => boolean },
 ) {
   const repo = new SqliteRepositories({ database: sqlite });
   const subscriptions: CocoConfig["subscriptions"] = timing.pollingIntervalMs === undefined ? undefined : {
@@ -34,6 +34,31 @@ export async function openReceivingWallet(
     await wallet.mint.addMint(mintUrl, { trusted: true });
     if (payout) payouts = startPayouts({ wallet, repo, fees, ...payout });
     return {
+      async reconcile() {
+        // Factory recovery is best-effort. Public per-operation refresh surfaces
+        // errors, and Coco alone owns redemption, proof recovery and settlement.
+        // Quotes can survive a crash before an operation is prepared. Refresh
+        // those too; the default processor owns automatic claims for them.
+        for (const quote of await wallet.quotes.mint.listPending()) {
+          await wallet.quotes.mint.refresh({ mintUrl: quote.mintUrl, quoteId: quote.quoteId });
+        }
+        for (const operation of await wallet.ops.mint.listInFlight()) {
+          const refreshed = await wallet.ops.mint.refresh(operation.id);
+          if (refreshed.state === "executing" || refreshed.state === "init" || refreshed.error) {
+            throw new Error("Receiving operation requires reconciliation.");
+          }
+        }
+        for (const operation of await wallet.ops.melt.listInFlight()) {
+          const refreshed = await wallet.ops.melt.refresh(operation.id);
+          if (refreshed.state !== "pending" && refreshed.state !== "finalized" && refreshed.state !== "rolled_back") {
+            throw new Error("Payout operation requires reconciliation.");
+          }
+        }
+        if ((await wallet.quotes.mint.listPending()).some((quote) => quote.state === "PAID")) {
+          throw new Error("Paid receiving quote is awaiting Coco's claim processor.");
+        }
+      },
+      evaluatePayouts() { payouts?.request(); },
       async createInvoice(amountSats: number) {
         const quote = await wallet.quotes.mint.create({ mintUrl, method: "bolt11", amount: amountSats, unit: "sat" });
         // Validate the actual invoice, not just the mint's quote amount. This
