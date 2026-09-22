@@ -31,6 +31,8 @@ A running server captures its selected destination ID. Payout allocation derives
 
 `setup` is an optional offline initialization/selection command and prints an address preview. `verify` opens an existing database and resolves environment overrides plus the persisted fallback without creating or activating identities. Verification of a requested identity that has never been initialized fails with guidance to run setup or serve. Both commands read repositories directly without starting Coco workers, recovery or mint requests. They may apply migrations.
 
+`status` adds a strictly read-only repository snapshot, prospective identity selection (including uncreated identities), per-mint funds and operation progress, and a private local query for a running server's captured configuration and diagnostics. It applies no migrations and makes no mint requests. See [wallet status](wallet-status.md) for observation boundaries and walkthroughs.
+
 The local balance sums `proofRepository.getAvailableProofs(mintUrl, { unit: "sat" })` using bigint arithmetic. Reserved, inflight, spent and non-sat proofs are excluded; other-mint funds are excluded from this selected-mint balance. The seed is validated but never printed. Previewing `/0/0` consumes no index and does not establish that the account has no earlier usage.
 
 ## Migration and verification

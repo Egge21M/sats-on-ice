@@ -3,6 +3,7 @@ import { UserError } from "./errors.ts";
 import { fetchMintCapabilities, type MintCapabilities } from "./mint-capabilities.ts";
 import { openReceivingWallet } from "./receiving-wallet.ts";
 import { openInstance } from "./setup.ts";
+import { serveLiveStatus, type LiveStatus } from "./live-status.ts";
 
 type ReceivingWallet = Awaited<ReturnType<typeof openReceivingWallet>>;
 export type ReceivingStatus = "validating" | "retrying" | "ready" | "incompatible" | "stopped";
@@ -49,9 +50,20 @@ export async function startReceivingServer(options: {
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let initializing: Promise<void> | undefined;
   let stopping: Promise<void> | undefined;
+  const { nextPayoutIndex: _index, ...capturedConfig } = config;
+  const startedAt = new Date().toISOString();
+  const observation: LiveStatus = {
+    startedAt, observedAt: startedAt, config: capturedConfig,
+    readiness: status, readinessObservedAt: startedAt, message: "Starting receiving.",
+    lastPayout: null, lastInvoiceError: null,
+  };
+  let statusSocket: Awaited<ReturnType<typeof serveLiveStatus>> | undefined;
 
   function report(next: ReceivingStatus, message: string) {
     status = next;
+    observation.readiness = next;
+    observation.readinessObservedAt = new Date().toISOString();
+    observation.message = message;
     options.onStatus?.(next, message);
   }
 
@@ -87,6 +99,7 @@ export async function startReceivingServer(options: {
       return json({ pr: invoice, routes: [] });
     } catch {
       // Mint, SQL and library errors can contain seed/proof material.
+      observation.lastInvoiceError = { observedAt: new Date().toISOString(), message: "Unable to prepare a receiving invoice. Mint connectivity or wallet processing may be unavailable." };
       return failure("Unable to prepare a receiving invoice. Please try again later.", 502);
     }
   }
@@ -117,7 +130,10 @@ export async function startReceivingServer(options: {
       const opened = await openReceivingWallet(connection.sqlite, async () => store.getSeed(), mintUrl, options.timing, {
         config, limits: checked.payout,
         allocate: () => connection.sqlite.transaction(() => store.allocatePayout(config.destinationId)).immediate(),
-        report: (message) => options.onPayout?.(message),
+        report: (message) => {
+          observation.lastPayout = { observedAt: new Date().toISOString(), message };
+          options.onPayout?.(message);
+        },
       });
       if (abort.signal.aborted) { await opened.close(); return; }
       wallet = opened;
@@ -144,6 +160,7 @@ export async function startReceivingServer(options: {
     report("stopped", "Receiving stopped.");
     stopping = (async () => {
       await server.stop(true);
+      await statusSocket?.close();
       await initializing?.catch(() => {});
       await Promise.allSettled(inFlight);
       try { await wallet?.close(); }
@@ -152,6 +169,9 @@ export async function startReceivingServer(options: {
     return stopping;
   }
 
+  // Diagnostics are local to the database host and expose no new public route.
+  try { statusSocket = await serveLiveStatus(options.database, () => ({ ...observation, observedAt: new Date().toISOString() })); }
+  catch { options.onStatus?.(status, "Local live status unavailable; inspect serve output for readiness and payout diagnostics."); }
   initializing = initialize();
   try { await initializing; }
   catch (error) { await stop(); throw error; }

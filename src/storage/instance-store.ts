@@ -49,6 +49,24 @@ export class InstanceStore {
     return parsed.data;
   }
 
+  /** Preview a future start, including identities/destinations that do not exist yet. */
+  inspectSelection(input: RuntimeConfig) {
+    this.getSeed();
+    const current = this.currentIdentity();
+    if (!current) throw new UserError("Stored instance is incomplete. Restore the complete database.");
+    const { mintUrl: _mint, payoutThresholdSats: _threshold, ...lastActiveIdentity } = this.configured(input, current);
+    const requested = this.requestedIdentity(input);
+    const target = this.db.select().from(destination).where(eq(destination.xpub, requested.destinationKey)).get();
+    const selected = this.identityQuery().where(and(eq(identity.username, requested.username), eq(destination.xpub, requested.destinationKey))).get();
+    const nextStart = {
+      ...input, ...requested, identityId: selected?.identityId ?? null,
+      destinationId: target?.id ?? null, nextPayoutIndex: target?.nextPayoutIndex ?? 0,
+    };
+    // Reuse stored-data validation even for a new, unpersisted selection.
+    this.configured(input, { ...nextStart, identityId: nextStart.identityId ?? 1, destinationId: nextStart.destinationId ?? 1 });
+    return { lastActiveIdentity, nextStart };
+  }
+
   /** Read the env-selected identity without creating or activating records. */
   load(input: RuntimeConfig): ActiveConfig {
     this.getSeed();

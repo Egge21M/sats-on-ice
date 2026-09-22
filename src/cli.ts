@@ -3,6 +3,7 @@ import { z } from "zod";
 import { UserError } from "./errors.ts";
 import { setupInstance, verifyInstance, type SetupSummary } from "./setup.ts";
 import { startReceivingServer } from "./server.ts";
+import { formatStatus, inspectStatus } from "./status.ts";
 
 function printSummary(summary: SetupSummary) {
   const { config } = summary;
@@ -31,6 +32,10 @@ export async function runCli(argv: string[]) {
   program.command("verify")
     .description("Inspect the env-selected identity and local balance at the configured mint")
     .action(async () => printSummary(await verifyInstance(program.opts().database)));
+
+  program.command("status")
+    .description("Inspect local wallet progress, next-start selection and observable server readiness without processing payments")
+    .action(async () => console.log(formatStatus(await inspectStatus(program.opts().database))));
 
   program.command("serve")
     .description("Serve the Lightning Address and claim incoming payments (one server per database)")

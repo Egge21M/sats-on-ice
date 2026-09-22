@@ -2,7 +2,7 @@
 
 A self-hosted, MIT-licensed Lightning Address service that accumulates payments as Cashu ecash and sweeps them to a Bitcoin wallet when a configured threshold is reached.
 
-Local setup, verification, Lightning Address receiving and automatic on-chain payouts are implemented. Fly.io deployment and warm-resume handling remain subsequent slices. See the [v1 design](https://github.com/Egge21M/sats-on-ice/issues/1), [receiving evidence](docs/design/lightning-receiving.md) and [payout evidence](docs/design/threshold-payouts.md).
+Local setup, wallet status, Lightning Address receiving and automatic on-chain payouts are implemented. Fly.io deployment and warm-resume handling remain subsequent slices. See the [v1 design](https://github.com/Egge21M/sats-on-ice/issues/1), [receiving evidence](docs/design/lightning-receiving.md) and [payout evidence](docs/design/threshold-payouts.md).
 
 ## Configure and start an instance
 
@@ -24,6 +24,7 @@ Supply a **Bitcoin mainnet native SegWit account xpub or zpub** from a fresh acc
 ```sh
 bun run cli setup    # Optional: initialize/select the env-configured identity and print a preview
 bun run cli verify   # Inspect an existing identity and the selected mint's local balance
+bun run cli status   # Inspect wallet progress, future selection and observable server readiness
 ```
 
 **Compare the first payout address with your wallet before receiving payments.** The `/0/0` preview consumes no index; xpubs do not establish the account's full origin path, and address history/reuse is not checked. Equivalent xpub/zpub encodings share one normalized destination and counter.
@@ -35,6 +36,25 @@ Changing `SOI_MINT_URL` selects the mint for new invoices and payout attempts. R
 `SOI_DATABASE` defaults to `./data/sats-on-ice.sqlite`, `SOI_HOSTNAME` to `127.0.0.1`, and `SOI_PORT` to `3000`. CLI flags `--database`, `--hostname` and `--port` override those process settings. Username/xpub/mint/threshold are configured through the environment, not setup flags. Usernames accept 1–64 lowercase letters, digits, dots, underscores or hyphens and begin with a letter; thresholds must be positive whole sats within JavaScript's safe-integer range. Use HTTPS for remote mints.
 
 **Existing databases:** the migration preserves the seed, Coco state, identity and next payout index while splitting destinations into their own table. It removes the old settings table. Supply `SOI_MINT_URL` and `SOI_PAYOUT_THRESHOLD_SATS` before upgrading; the old database values are no longer runtime defaults. Username and xpub can be omitted to retain the migrated active identity.
+
+## Inspect wallet progress
+
+Run `bun run cli --database ./data/sats-on-ice.sqlite status` on the database host, with `SOI_MINT_URL` and `SOI_PAYOUT_THRESHOLD_SATS` set on **every invocation**. Optional `SOI_USERNAME` and `SOI_XPUB` inherit omitted values from the last active identity. Status separates:
+
+- The last active identity in SQLite, its destination and next payout index.
+- The identity, mint and threshold selected by this command's environment for a future start. A new identity is shown as uncreated. Status does not activate it.
+- A responding server's captured configuration, startup readiness and latest payout/invoice diagnostic, with observation times. Environment changes take effect only when that server restarts.
+- Spendable sats at the environment-selected mint, funds reserved in pending payouts, other unavailable funds, and separately listed balances and operations at other recorded mints. Balances are never assigned to identities.
+
+Each payout shows its local Coco state, recorded destination, mint quote state and transaction outpoint where available. A pending payout is distinct from a finalized operation. **An outpoint indicates broadcast, not confirmation.** Coco 2.0 exposes no Bitcoin confirmation state; status explicitly reports that information as unavailable. Errors recorded by Coco are flagged without printing raw library errors, which can contain secrets. The running server's safe diagnostic messages provide additional context.
+
+Status opens SQLite read-only and reads a consistent local snapshot. It generates no seed, applies no migrations, creates no identity, consumes no index, starts no manager and makes no mint requests. Funds are not swept or transferred. If startup has not initialized Coco's tables, wallet information is unavailable rather than a zero balance. Use `setup` or `serve` for initialization/upgrades.
+
+For live information, `serve` exposes a private Unix socket under `<canonical database path>.status/server.sock`, inside a directory accessible only to the owner (`0700`). Run status as the same OS user, against the same mounted database and socket directory. This adds no public HTTP route. A missing, inaccessible or unresponsive socket produces **readiness unavailable**; it does not prove that the server is stopped. Servers started before this feature need a restart to expose live information. The socket directory is disposable runtime state and is not part of a wallet backup.
+
+Even when the server responds, readiness describes its startup capability check, not a fresh mint probe or a guarantee of processor health. Local wallet records may lag the mint. Fly suspension can defer ecash claims and payouts until a request or explicit wake; status does not wake Fly or reconcile payments. A successful local command does not establish payment readiness. Keep one active server per database.
+
+The [status design and walkthrough](docs/design/wallet-status.md) describes inspection during pending payouts, mint failures and environment changes.
 
 ## Receive Lightning Address payments
 
@@ -61,10 +81,10 @@ Once the proxy is configured, enter `alice@pay.example` in a compatible payer wa
 Coco watches payments and claims ecash using its persisted operation lifecycle. Claiming can lag payment observation by the subscription polling interval (the pinned library defaults are five seconds for fast polling and twenty seconds for backup polling), network latency and mint request throttling. An unpaid invoice contributes nothing to the balance; a paid invoice contributes only after local ecash issuance. Inspect the locally held balance from another terminal:
 
 ```sh
-bun run cli --database ./data/sats-on-ice.sqlite verify
+bun run cli --database ./data/sats-on-ice.sqlite status
 ```
 
-`verify` does not contact the mint or run a second payment processor. Stop the server with Ctrl-C or SIGTERM; it closes HTTP connections, waits for pending application handlers, and disposes Coco before closing SQLite. In-flight HTTP responses may be interrupted. Reopen with the same `serve` command to reconcile pending receiving operations. **Run only one active server against a database**; this is documented rather than enforced. The server now automatically sweeps eligible spendable funds through the mint’s on-chain method. Processor-health gating and Fly warm-resume handling remain later work.
+`status` does not contact the mint or run a second payment processor. Stop the server with Ctrl-C or SIGTERM; it closes HTTP connections, waits for pending application handlers, and disposes Coco before closing SQLite. In-flight HTTP responses may be interrupted. Reopen with the same `serve` command to reconcile pending receiving operations. **Run only one active server against a database**; this is documented rather than enforced. The server now automatically sweeps eligible spendable funds through the mint’s on-chain method. Processor-health gating and Fly warm-resume handling remain later work.
 
 For a repeatable walkthrough without funds or a Lightning node:
 
@@ -80,7 +100,7 @@ At startup and after an ecash claim or payout settlement, the server evaluates t
 
 The sweep uses the available balance, deducts input fees and the lowest advertised fee reserve, and includes any required pre-swap costs. Fee options are selected by their advertised identifier. There is no separate application fee cap. Returned change and proof-selection remainders stay in the accumulated balance. Unsupported, out-of-range or unaffordable quotes are reported without a fallback payment route.
 
-The `serve` output includes the payout address, allocated index, recipient amount, selected reserve, Coco operation ID and subsequent pending/finalized state. A mint-reported outpoint does not establish Bitcoin confirmation. Coco owns preparation, reserved proofs, execution and settlement. New receipts may trigger a separate payout while another remains pending; initiation is serialized within the one server process. `verify` remains offline and reports spendable balance and next index; richer management remains future work.
+The `serve` output includes the payout address, allocated index, recipient amount, selected reserve, Coco operation ID and subsequent pending/finalized state. A mint-reported outpoint does not establish Bitcoin confirmation. Coco owns preparation, reserved proofs, execution and settlement. New receipts may trigger a separate payout while another remains pending; initiation is serialized within the one server process. `status` shows persisted payout progress and separate per-mint balances; `verify` retains its smaller local summary.
 
 A failed attempt is not retried continuously against the same proofs. A new receipt, settlement or restart can reevaluate the balance; the application never replays a possibly submitted withdrawal. Coco recovery can leave prepared operations reserved for an owner decision, and may retain unresolved operations after connectivity failures. This slice adds no recovery CLI. Keep the complete database and inspect persisted operations before taking recovery action.
 

@@ -33,11 +33,20 @@ test("env-driven setup and verify work from another directory and omit seed mate
   const verify = await cli("verify");
   expect(verify.code).toBe(0);
   expect(verify.stdout).toContain("Username: alice");
+  env.SOI_USERNAME = "bob";
+  const status = await cli("status");
+  expect(status.code).toBe(0);
+  expect(status.stderr).toBe("");
+  expect(status.stdout).toContain('Last active identity in SQLite: "alice"');
+  expect(status.stdout).toContain('Environment selection for next start: "bob"');
+  expect(status.stdout).toContain("identity new; not created");
+  expect(status.stdout).toContain("Running server configuration and readiness: unavailable");
+  expect(status.stdout).toContain("Accumulated balance: 0 sats");
   const connection = openDatabase(env.SOI_DATABASE!, false);
   try {
     const seed = Buffer.from(new InstanceStore(connection.db).getSeed());
-    expect((setup.stdout + setup.stderr + verify.stdout + verify.stderr).includes(seed.toString("hex"))).toBe(false);
-    expect((setup.stdout + setup.stderr + verify.stdout + verify.stderr).includes(seed.toString("base64"))).toBe(false);
+    expect((setup.stdout + setup.stderr + verify.stdout + verify.stderr + status.stdout).includes(seed.toString("hex"))).toBe(false);
+    expect((setup.stdout + setup.stderr + verify.stdout + verify.stderr + status.stdout).includes(seed.toString("base64"))).toBe(false);
   } finally { connection.close(); }
 }, 10_000);
 
@@ -59,5 +68,8 @@ test("serve rejects invalid ports and missing runtime policy before creating sta
   const missing = await cli("serve");
   expect(missing.code).toBe(1);
   expect(missing.stderr).toContain("SOI_MINT_URL");
+  const missingStatusPolicy = await cli("status");
+  expect(missingStatusPolicy.code).toBe(1);
+  expect(missingStatusPolicy.stderr).toContain("SOI_MINT_URL");
   expect(existsSync(env.SOI_DATABASE!)).toBe(false);
 });
