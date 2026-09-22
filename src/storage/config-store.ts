@@ -1,11 +1,20 @@
 import { generateMnemonic, mnemonicToSeedSync } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
+import type { SqliteRepositories } from "@cashu/coco-sqlite-bun";
 import { eq } from "drizzle-orm";
 import { storedConfigSchema, type SetupInput, type StoredConfig } from "../config.ts";
 import { UserError } from "../errors.ts";
 import { derivePayoutAddress } from "../destination.ts";
 import type { AppDatabase } from "./database.ts";
 import { identity, settings, walletSecret } from "./schema.ts";
+
+export async function assertConfiguredMint(repo: SqliteRepositories, mintUrl: string) {
+  const mints = await repo.mintRepository.getAllMints();
+  const proofs = await repo.proofRepository.getAllReadyProofs();
+  if (mints.some((mint) => mint.mintUrl !== mintUrl) || proofs.some((proof) => proof.mintUrl !== mintUrl)) {
+    throw new UserError("This wallet contains a different mint from its configured mint. Restore the matching application and wallet state.");
+  }
+}
 
 export class ConfigStore {
   constructor(private readonly db: AppDatabase) {}

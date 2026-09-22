@@ -2,9 +2,8 @@ import { setupSchema, type StoredConfig } from "./config.ts";
 import { SqliteRepositories } from "@cashu/coco-sqlite-bun";
 import { derivePayoutAddress } from "./destination.ts";
 import { UserError } from "./errors.ts";
-import { ConfigStore } from "./storage/config-store.ts";
+import { assertConfiguredMint, ConfigStore } from "./storage/config-store.ts";
 import { openDatabase } from "./storage/database.ts";
-import { assertConfiguredMint, openLocalWallet } from "./wallet.ts";
 
 export interface SetupSummary {
   created: boolean;
@@ -17,19 +16,16 @@ async function inspect(connection: ReturnType<typeof openDatabase>, store: Confi
   const config = connection.sqlite.transaction(() => store.load())();
   if (!config) throw new UserError("This database has not been set up. Run setup first.");
   const repo = new SqliteRepositories({ database: connection.sqlite });
-  const wallet = await openLocalWallet(repo, async () => store.getSeed());
-  try {
-    await assertConfiguredMint(repo, config.mintUrl);
-    const balance = await wallet.wallet.balances.total({ mintUrls: [config.mintUrl], units: ["sat"] });
-    return {
-      created,
-      config,
-      firstPayoutAddress: derivePayoutAddress(config.destinationKey, 0),
-      accumulatedBalanceSats: balance.spendable.toString(),
-    };
-  } finally {
-    await wallet.dispose();
-  }
+  await repo.init();
+  await assertConfiguredMint(repo, config.mintUrl);
+  const proofs = await repo.proofRepository.getAvailableProofs(config.mintUrl, { unit: "sat" });
+  const balance = proofs.reduce((sum, proof) => sum + proof.amount.toBigInt(), 0n);
+  return {
+    created,
+    config,
+    firstPayoutAddress: derivePayoutAddress(config.destinationKey, 0),
+    accumulatedBalanceSats: balance.toString(),
+  };
 }
 
 export async function setupInstance(path: string, input: unknown): Promise<SetupSummary> {

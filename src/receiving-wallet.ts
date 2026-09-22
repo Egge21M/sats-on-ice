@@ -2,7 +2,7 @@ import { initializeCoco, type CocoConfig } from "@cashu/coco-core";
 import { SqliteRepositories } from "@cashu/coco-sqlite-bun";
 import type { Database } from "bun:sqlite";
 import { decode } from "light-bolt11-decoder";
-import { assertConfiguredMint } from "./wallet.ts";
+import { assertConfiguredMint } from "./storage/config-store.ts";
 import { payoutFeePlugin, startPayouts } from "./payouts.ts";
 import type { StoredConfig } from "./config.ts";
 import type { AmountLimits } from "./mint-capabilities.ts";

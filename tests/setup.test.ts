@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { Amount, type CoreProof } from "@cashu/coco-core";
+import { Amount, Manager, type CoreProof } from "@cashu/coco-core";
 import { SqliteRepositories } from "@cashu/coco-sqlite-bun";
 import { HDKey } from "@scure/bip32";
 import { chmodSync, existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
@@ -10,7 +10,6 @@ import { setupInstance, verifyInstance } from "../src/setup.ts";
 import { ConfigStore } from "../src/storage/config-store.ts";
 import { openDatabase } from "../src/storage/database.ts";
 import { identity, settings, walletSecret } from "../src/storage/schema.ts";
-import { openLocalWallet } from "../src/wallet.ts";
 import { FIRST_ADDRESS, SETUP, XPUB } from "./fixtures.ts";
 
 let directory: string;
@@ -155,6 +154,24 @@ describe("local setup", () => {
   });
 });
 
+test("local inspection sums spendable sats exactly and excludes reserved, inflight, spent and non-sat proofs", async () => {
+  await setupInstance(path, SETUP);
+  const connection = openDatabase(path, false);
+  try {
+    const repo = new SqliteRepositories({ database: connection.sqlite });
+    await repo.init();
+    const proofs: CoreProof[] = [1n << 53n, 1n, 8n, 2n, 16n, 32n].map((amount, index) => ({
+      id: "0011223344556677", mintUrl: SETUP.mintUrl, unit: index === 5 ? "usd" : "sat", amount: Amount.from(amount),
+      secret: `public-balance-proof-${index}`, C: "02" + "11".repeat(32),
+      state: index === 3 ? "inflight" : index === 4 ? "spent" : "ready",
+      ...(index === 2 ? { usedByOperationId: "pending-test-payout" } : {}),
+    }));
+    await repo.proofRepository.saveProofs(SETUP.mintUrl, proofs);
+    expect((await verifyInstance(path)).accumulatedBalanceSats).toBe("9007199254740993");
+    expect((await setupInstance(path, SETUP)).accumulatedBalanceSats).toBe("9007199254740993");
+  } finally { connection.close(); }
+});
+
 test("both migration systems preserve application state, Coco counters, keyring and proofs across reopen", async () => {
   await setupInstance(path, SETUP);
   const digest = seedDigest();
@@ -162,7 +179,8 @@ test("both migration systems preserve application state, Coco counters, keyring 
   const repo = new SqliteRepositories({ database: connection.sqlite });
   await repo.init();
   const store = new ConfigStore(connection.db);
-  const wallet = await openLocalWallet(repo, async () => store.getSeed());
+  // Exercise Coco's seed/keyring compatibility with a test-only offline manager.
+  const wallet = new Manager(repo, async () => store.getSeed());
   const publicKey = (await wallet.keyring.generateKeyPair()).publicKeyHex;
   // Coco's P2PK keyring serializes the Schnorr x-only key with an even-y prefix.
   const expectedPublicKey = "02" + Buffer.from(HDKey.fromMasterSeed(store.getSeed()).derive("m/129373'/10'/0'/0'/0").publicKey!.slice(1)).toString("hex");
@@ -189,7 +207,7 @@ test("both migration systems preserve application state, Coco counters, keyring 
   const reopened = openDatabase(path, false);
   const reopenedRepo = new SqliteRepositories({ database: reopened.sqlite });
   await reopenedRepo.init();
-  const reopenedWallet = await openLocalWallet(reopenedRepo, async () => new ConfigStore(reopened.db).getSeed());
+  const reopenedWallet = new Manager(reopenedRepo, async () => new ConfigStore(reopened.db).getSeed());
   try {
     expect((await reopenedWallet.keyring.getKeyPair(publicKey))?.publicKeyHex).toBe(publicKey);
     expect((await reopenedRepo.counterRepository.getCounter(SETUP.mintUrl, "0011223344556677"))?.counter).toBe(42);
