@@ -35,17 +35,38 @@ export const payoutThresholdSchema = z.number().int().positive().max(Number.MAX_
 export const thresholdArgumentSchema = z.string().regex(/^\d+$/, "Threshold must be whole satoshis written as digits.")
   .transform(Number).pipe(payoutThresholdSchema);
 
-export const setupSchema = z.object({
-  username: usernameSchema,
+export const runtimeConfigSchema = z.object({
+  username: usernameSchema.optional(),
   mintUrl: mintUrlSchema,
-  destinationKey: destinationKeySchema,
+  destinationKey: destinationKeySchema.optional(),
   payoutThresholdSats: payoutThresholdSchema,
 }).strict();
 
-export const storedConfigSchema = setupSchema.extend({
+export const activeConfigSchema = runtimeConfigSchema.extend({
+  username: usernameSchema,
+  destinationKey: destinationKeySchema,
+  identityId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  destinationId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   // 2^31 means the unhardened sequence is exhausted, not a derivable address.
   nextPayoutIndex: z.number().int().min(0).max(0x80000000),
 });
 
-export type SetupInput = z.infer<typeof setupSchema>;
-export type StoredConfig = z.infer<typeof storedConfigSchema>;
+export type RuntimeConfig = z.infer<typeof runtimeConfigSchema>;
+export type ActiveConfig = z.infer<typeof activeConfigSchema>;
+
+const environmentSchema = z.object({
+  SOI_USERNAME: usernameSchema.optional(),
+  SOI_XPUB: destinationKeySchema.optional(),
+  SOI_MINT_URL: mintUrlSchema,
+  SOI_PAYOUT_THRESHOLD_SATS: thresholdArgumentSchema,
+});
+
+export function readRuntimeConfig(env: Record<string, string | undefined> = process.env): RuntimeConfig {
+  const values = environmentSchema.parse(env);
+  return {
+    username: values.SOI_USERNAME,
+    destinationKey: values.SOI_XPUB,
+    mintUrl: values.SOI_MINT_URL,
+    payoutThresholdSats: values.SOI_PAYOUT_THRESHOLD_SATS,
+  };
+}

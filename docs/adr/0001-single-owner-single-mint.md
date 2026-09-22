@@ -1,3 +1,3 @@
-# One owner and one mint per deployment
+# One owner, one active identity and one mint for new payments
 
-Each Sats on Ice deployment serves its owner's own funds through one configured username and one owner-configured Cashu mint for incoming Lightning payments and on-chain payouts. The server verifies the mint's required capabilities at startup. A single receiving identity keeps one accumulated balance and one destination wallet, avoiding accounting and wallet isolation across multiple usernames as well as multi-user access control and multi-mint routing.
+Each deployment serves one owner through one active receiving identity and one environment-selected Cashu mint for new receiving and payout attempts. Earlier identities and destinations remain available for reuse; they do not partition balances or create multi-user accounts. Changing the mint leaves previous balances in Coco without automatic migration or new sweeps at those mints, while Coco retains responsibility for recovering existing operations.

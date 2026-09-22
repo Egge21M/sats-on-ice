@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { normalizeMintUrl } from "@cashu/coco-core";
 import { HDKey } from "@scure/bip32";
-import { mintUrlSchema, setupSchema, thresholdArgumentSchema } from "../src/config.ts";
+import { mintUrlSchema, runtimeConfigSchema, thresholdArgumentSchema, readRuntimeConfig } from "../src/config.ts";
 import { derivePayoutAddress, normalizeDestinationKey } from "../src/destination.ts";
 import { FIRST_ADDRESS, SECOND_ADDRESS, SETUP, XPUB, ZPUB } from "./fixtures.ts";
 
@@ -27,7 +27,7 @@ describe("destination account", () => {
     ];
     for (const destinationKey of invalid) {
       // Use booleans so a failed assertion never prints a private-key input.
-      expect(setupSchema.safeParse({ ...SETUP, destinationKey }).success).toBe(false);
+      expect(runtimeConfigSchema.safeParse({ ...SETUP, destinationKey }).success).toBe(false);
     }
   });
 
@@ -38,7 +38,7 @@ describe("destination account", () => {
 
 describe("configuration validation", () => {
   test("normalizes mint URL and destination serialization", () => {
-    expect(setupSchema.parse({ ...SETUP, mintUrl: "https://MINT.example:443/" })).toEqual({ ...SETUP, destinationKey: XPUB });
+    expect(runtimeConfigSchema.parse({ ...SETUP, mintUrl: "https://MINT.example:443/" })).toEqual({ ...SETUP, destinationKey: XPUB });
   });
 
   test.each([
@@ -55,22 +55,36 @@ describe("configuration validation", () => {
   });
 
   test.each(["", "Alice", "@alice", "../alice", "a b", "a".repeat(65)])("rejects invalid username %s", (username) => {
-    expect(setupSchema.safeParse({ ...SETUP, username }).success).toBe(false);
+    expect(runtimeConfigSchema.safeParse({ ...SETUP, username }).success).toBe(false);
   });
 
   test.each(["mint.example", "ftp://mint.example", "https://user:password@mint.example", "https://mint.example?q=1", "https://mint.example/#x", "https://mint.example/?", "https://mint.example/#"])("rejects invalid mint URL %s", (mintUrl) => {
-    expect(setupSchema.safeParse({ ...SETUP, mintUrl }).success).toBe(false);
+    expect(runtimeConfigSchema.safeParse({ ...SETUP, mintUrl }).success).toBe(false);
   });
 
   test.each([0, -1, 0.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1, "1000", true])("rejects invalid threshold %s", (payoutThresholdSats) => {
-    expect(setupSchema.safeParse({ ...SETUP, payoutThresholdSats }).success).toBe(false);
+    expect(runtimeConfigSchema.safeParse({ ...SETUP, payoutThresholdSats }).success).toBe(false);
   });
 
-  test("CLI accepts integer sats without permissive numeric coercion", () => {
+  test("environment accepts integer sats without permissive numeric coercion", () => {
     expect(thresholdArgumentSchema.parse("1000")).toBe(1000);
     expect(thresholdArgumentSchema.parse(String(Number.MAX_SAFE_INTEGER))).toBe(Number.MAX_SAFE_INTEGER);
     for (const value of ["", "0", "-1", "1.5", "1e3", "0x10", " 1", "true", "9007199254740992"]) {
       expect(thresholdArgumentSchema.safeParse(value).success).toBe(false);
     }
   });
+});
+
+
+test("runtime policy is required from env while identity overrides are optional and normalized", () => {
+  const policy = { SOI_MINT_URL: "https://MINT.example///", SOI_PAYOUT_THRESHOLD_SATS: "1000" };
+  expect(readRuntimeConfig(policy)).toEqual({ mintUrl: "https://mint.example", payoutThresholdSats: 1000, username: undefined, destinationKey: undefined });
+  expect(readRuntimeConfig({ ...policy, SOI_USERNAME: "alice", SOI_XPUB: ZPUB }).destinationKey).toBe(XPUB);
+  for (const key of ["SOI_MINT_URL", "SOI_PAYOUT_THRESHOLD_SATS"]) {
+    const missing: Record<string, string> = { ...policy };
+    delete missing[key];
+    expect(() => readRuntimeConfig(missing)).toThrow();
+  }
+  expect(() => readRuntimeConfig({ ...policy, SOI_USERNAME: "" })).toThrow();
+  expect(() => readRuntimeConfig({ ...policy, SOI_XPUB: "" })).toThrow();
 });

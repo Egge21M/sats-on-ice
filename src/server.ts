@@ -1,9 +1,8 @@
-import type { StoredConfig } from "./config.ts";
+import type { RuntimeConfig } from "./config.ts";
 import { UserError } from "./errors.ts";
 import { fetchMintCapabilities, type MintCapabilities } from "./mint-capabilities.ts";
 import { openReceivingWallet } from "./receiving-wallet.ts";
-import { ConfigStore } from "./storage/config-store.ts";
-import { openDatabase } from "./storage/database.ts";
+import { openInstance } from "./setup.ts";
 
 type ReceivingWallet = Awaited<ReturnType<typeof openReceivingWallet>>;
 export type ReceivingStatus = "validating" | "retrying" | "ready" | "incompatible" | "stopped";
@@ -28,6 +27,7 @@ function publicHost(request: Request): string {
 
 export async function startReceivingServer(options: {
   database: string;
+  config?: RuntimeConfig;
   hostname?: string;
   port?: number;
   retryDelayMs?: number;
@@ -36,17 +36,8 @@ export async function startReceivingServer(options: {
   /** Internal timing overrides for controlled integration checks. */
   timing?: { pollingIntervalMs?: number; processorIntervalMs?: number };
 }) {
-  const connection = openDatabase(options.database, false);
-  const store = new ConfigStore(connection.db);
-  let config: StoredConfig;
-  try {
-    const loaded = connection.sqlite.transaction(() => store.load())();
-    if (!loaded) throw new UserError("This database has not been set up. Run setup first.");
-    config = loaded;
-  } catch (error) {
-    connection.close();
-    throw error;
-  }
+  const connection = openInstance(options.database, options.config);
+  const { store, config } = connection;
   const { username, mintUrl } = config;
   const discoveryPath = `/.well-known/lnurlp/${username}`;
   const callbackPath = `/lnurlp/${username}/callback`;
@@ -125,7 +116,7 @@ export async function startReceivingServer(options: {
       if (abort.signal.aborted) return;
       const opened = await openReceivingWallet(connection.sqlite, async () => store.getSeed(), mintUrl, options.timing, {
         config, limits: checked.payout,
-        allocate: () => connection.sqlite.transaction(() => store.allocatePayout()).immediate(),
+        allocate: () => connection.sqlite.transaction(() => store.allocatePayout(config.destinationId)).immediate(),
         report: (message) => options.onPayout?.(message),
       });
       if (abort.signal.aborted) { await opened.close(); return; }

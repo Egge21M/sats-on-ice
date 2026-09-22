@@ -1,7 +1,7 @@
 import type { Manager, MeltOperation, OnchainMeltQuote, PreparedMeltOperation } from "@cashu/coco-core";
 import type { SqliteRepositories } from "@cashu/coco-sqlite-bun";
 import type { Plugin, ServiceMap } from "@cashu/coco-core/plugin";
-import type { StoredConfig } from "./config.ts";
+import type { ActiveConfig } from "./config.ts";
 import type { AmountLimits } from "./mint-capabilities.ts";
 import { UserError } from "./errors.ts";
 
@@ -31,7 +31,7 @@ export function startPayouts(options: {
   wallet: Manager;
   repo: SqliteRepositories;
   fees: ReturnType<typeof payoutFeePlugin>;
-  config: StoredConfig;
+  config: ActiveConfig;
   limits: AmountLimits;
   allocate: () => { address: string; index: number };
   report: (message: string) => void;

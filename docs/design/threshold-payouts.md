@@ -6,7 +6,7 @@ Implementation of [issue #4](https://github.com/Egge21M/sats-on-ice/issues/4). F
 
 The active server evaluates spendable sat proofs on startup, after a mint operation finalizes, and after payout settlement. Coco's available-proof repository excludes inflight and reserved proofs. Eligibility is measured before fees using `balance >= threshold`. A coalescing queue serializes allocation, quoting, preparation and submission. Coco tracks pending settlement independently, so fresh unreserved funds can fund the next payout.
 
-An IMMEDIATE SQLite transaction derives `/0/index` and increments the identity's next payout index. It commits before mint communication; no failure path decrements it. Exhausted indices are refused. The transaction is separate from Coco's later operation transactions. A crash between allocation and preparation can leave a gap. No Bitcoin address history is queried.
+An IMMEDIATE SQLite transaction derives `/0/index` and increments the destination's next payout index. It commits before mint communication; no failure path decrements it. Exhausted indices are refused. The transaction is separate from Coco's later operation transactions. A crash between allocation and preparation can leave a gap. No Bitcoin address history is queried.
 
 A hash of the last attempted proof set prevents repeated failures from continuously allocating indices for unchanged funds in the running process. A new proof set or process restart allows another attempt. This is not an operation recovery mechanism. Only Coco recovers submitted operations; the application neither replays withdrawals nor automatically reclaims ambiguous funds. The documented single-server restriction still applies across processes.
 
@@ -37,3 +37,9 @@ The equality walkthrough receives 999 sats (no payout), then one sat. The result
 Additional integration cases cover above-threshold sweeping, input fees, underfunded pre-swap cancellation and a funded pre-swap execution, concurrent receipts while a payout is pending, distinct addresses and disjoint inputs, pending settlement, startup with accumulated proofs, restart after mint settlement without replay, unaffordable amounts, mint maximums, quote failures and index exhaustion. These demonstrate the pinned Coco and fixture combination, not interoperability with an external mint or Bitcoin backend.
 
 API references: [Coco melt operations](https://cashubtc.github.io/coco/pages/melt-operations.html), [NUT-30](https://github.com/cashubtc/nuts/blob/main/30.md). Fee and reservation behavior was also inspected in the installed Coco 2.0.0 implementation; the manifest and lockfile remain authoritative.
+
+## Environment changes and destination history
+
+The server captures the environment-selected mint, threshold and active identity on startup. Destination counters are keyed by normalized xpub and shared by identities using that key; allocation uses the captured destination ID even if another local command later selects an identity. Changing the environment and restarting can select a different username, destination, mint or threshold without deleting history. Omitted username/xpub values come from the last active identity.
+
+New sweep attempts use only available sats at the currently selected mint. Funds at previous mints remain in Coco without automatic transfer or new sweeps. Existing operations can still recover, and submitted payouts retain their recorded destination rather than being redirected to the newly active identity. The mint-switch integration test covers old pending settlement, retention of old spendable funds, and new payouts to a new destination with its own counter.

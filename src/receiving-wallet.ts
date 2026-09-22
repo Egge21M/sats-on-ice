@@ -1,10 +1,9 @@
-import { Manager, type CocoConfig } from "@cashu/coco-core";
+import { initializeCoco, type CocoConfig } from "@cashu/coco-core";
 import { SqliteRepositories } from "@cashu/coco-sqlite-bun";
 import type { Database } from "bun:sqlite";
 import { decode } from "light-bolt11-decoder";
-import { assertConfiguredMint } from "./wallet.ts";
 import { payoutFeePlugin, startPayouts } from "./payouts.ts";
-import type { StoredConfig } from "./config.ts";
+import type { ActiveConfig } from "./config.ts";
 import type { AmountLimits } from "./mint-capabilities.ts";
 
 /** The server owns this active lifecycle; CLI inspection never enables it. */
@@ -13,31 +12,26 @@ export async function openReceivingWallet(
   seedGetter: () => Promise<Uint8Array>,
   mintUrl: string,
   timing: { pollingIntervalMs?: number; processorIntervalMs?: number } = {},
-  payout?: { config: StoredConfig; limits: AmountLimits; allocate: () => { address: string; index: number }; report: (message: string) => void },
+  payout?: { config: ActiveConfig; limits: AmountLimits; allocate: () => { address: string; index: number }; report: (message: string) => void },
 ) {
   const repo = new SqliteRepositories({ database: sqlite });
-  await repo.init();
   const subscriptions: CocoConfig["subscriptions"] = timing.pollingIntervalMs === undefined ? undefined : {
     fastPollingIntervalMs: timing.pollingIntervalMs,
     slowPollingIntervalMs: timing.pollingIntervalMs,
   };
   const fees = payoutFeePlugin();
-  const wallet = new Manager(repo, seedGetter, undefined, undefined, [fees.plugin], undefined, undefined, subscriptions);
+  const wallet = await initializeCoco({
+    repo, seedGetter, plugins: [fees.plugin], subscriptions,
+    processors: timing.processorIntervalMs === undefined ? undefined : {
+      mintOperationProcessor: {
+        processIntervalMs: timing.processorIntervalMs,
+        initialEnqueueDelayMs: timing.processorIntervalMs,
+      },
+    },
+  });
   let payouts: ReturnType<typeof startPayouts> | undefined;
   try {
-    await wallet.initPlugins();
-    await assertConfiguredMint(wallet, mintUrl);
     await wallet.mint.addMint(mintUrl, { trusted: true });
-    await wallet.ops.melt.recovery.run();
-    await wallet.enableMeltSettlementProcessor();
-    await wallet.enableMeltQuoteWatcher();
-    await wallet.reconcileLegacyMintQuotes(mintUrl);
-    await wallet.enableMintOperationProcessor({
-      processIntervalMs: timing.processorIntervalMs,
-      initialEnqueueDelayMs: timing.processorIntervalMs,
-    });
-    await wallet.enableMintOperationWatcher();
-    await wallet.recoverPendingMintOperations();
     if (payout) payouts = startPayouts({ wallet, repo, fees, ...payout });
     return {
       async createInvoice(amountSats: number) {

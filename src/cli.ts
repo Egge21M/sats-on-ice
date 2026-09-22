@@ -1,13 +1,12 @@
 import { Command, CommanderError } from "commander";
 import { z } from "zod";
-import { thresholdArgumentSchema } from "./config.ts";
 import { UserError } from "./errors.ts";
 import { setupInstance, verifyInstance, type SetupSummary } from "./setup.ts";
 import { startReceivingServer } from "./server.ts";
 
 function printSummary(summary: SetupSummary) {
   const { config } = summary;
-  console.log(summary.created ? "Setup created." : "Existing setup verified.");
+  console.log(summary.created ? "Identity created." : "Existing identity selected.");
   console.log(`Username: ${config.username}`);
   console.log(`Mint: ${config.mintUrl}`);
   console.log(`Payout threshold: ${config.payoutThresholdSats} sats`);
@@ -21,34 +20,22 @@ function printSummary(summary: SetupSummary) {
 export async function runCli(argv: string[]) {
   const program = new Command()
     .name("sats-on-ice")
-    .description("Configure a self-hosted Lightning Address and its local Cashu wallet.")
-    .option("--database <path>", "persistent SQLite database file", "./data/sats-on-ice.sqlite")
+    .description("Run an env-configured Lightning Address and inspect its Cashu wallet.")
+    .option("--database <path>", "persistent SQLite database file", process.env.SOI_DATABASE ?? "./data/sats-on-ice.sqlite")
     .exitOverride();
 
   program.command("setup")
-    .description("Create setup, or verify identical existing setup without replacing it")
-    .requiredOption("--username <name>", "single lowercase Lightning Address username")
-    .requiredOption("--mint <url>", "Cashu mint HTTP(S) URL")
-    .requiredOption("--xpub <key>", "Bitcoin mainnet native SegWit account xpub or zpub")
-    .requiredOption("--threshold <sats>", "positive whole-satoshi payout threshold")
-    .action(async (options) => {
-      const summary = await setupInstance(program.opts().database, {
-        username: options.username,
-        mintUrl: options.mint,
-        destinationKey: options.xpub,
-        payoutThresholdSats: thresholdArgumentSchema.parse(options.threshold),
-      });
-      printSummary(summary);
-    });
+    .description("Initialize/select the environment-configured identity locally (optional before serve)")
+    .action(async () => printSummary(await setupInstance(program.opts().database)));
 
   program.command("verify")
-    .description("Reopen stored setup and show its local spendable balance")
+    .description("Inspect the env-selected identity and local balance at the configured mint")
     .action(async () => printSummary(await verifyInstance(program.opts().database)));
 
   program.command("serve")
     .description("Serve the Lightning Address and claim incoming payments (one server per database)")
-    .option("--hostname <host>", "interface to bind; use 0.0.0.0 behind an HTTPS proxy", "127.0.0.1")
-    .option("--port <port>", "HTTP port (0 selects a free port)", "3000")
+    .option("--hostname <host>", "interface to bind; use 0.0.0.0 behind an HTTPS proxy", process.env.SOI_HOSTNAME ?? "127.0.0.1")
+    .option("--port <port>", "HTTP port (0 selects a free port)", process.env.SOI_PORT ?? "3000")
     .action(async (options) => {
       const port = z.string().regex(/^[0-9]+$/).transform(Number).pipe(z.number().int().min(0).max(65535)).parse(options.port);
       const service = await startReceivingServer({

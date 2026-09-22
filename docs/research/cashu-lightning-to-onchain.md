@@ -2,7 +2,7 @@
 
 Researched 2026-09-19. Scope: feasibility and current public APIs for a self-hosted Lightning Address service that accumulates Cashu ecash and pays an xpub-derived Bitcoin address. No live mint was queried, no payments were made, and no dependencies were installed.
 
-Implementation follow-up, 2026-09-20: [PR #9](https://github.com/Egge21M/sats-on-ice/pull/9) selects and tests the [local setup dependencies and lifecycle](../design/local-setup.md), including Coco core/Bun adapter 2.0.0, Commander, Drizzle and Zod. Local setup uses explicit `Manager` construction because `initializeCoco()` performs recovery even when background workers are disabled; the payment examples below concern the future server. The original research remains background for live mint integration, which this PR does not verify.
+Implementation follow-up, 2026-09-20: [PR #9](https://github.com/Egge21M/sats-on-ice/pull/9) selects and tests the [local setup dependencies and lifecycle](../design/local-setup.md), including Coco core/Bun adapter 2.0.0, Commander, Drizzle and Zod. That baseline used explicit `Manager` construction because `initializeCoco()` performs recovery even when background workers are disabled; the payment examples below concern the future server. The original research remains background for live mint integration, which this PR does not verify.
 
 ## Finding
 

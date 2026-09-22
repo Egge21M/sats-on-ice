@@ -2,9 +2,11 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { HDKey } from "@scure/bip32";
+import { derivePayoutAddress } from "../src/destination.ts";
 import { SqliteRepositories } from "@cashu/coco-sqlite-bun";
 import { startReceivingServer } from "../src/server.ts";
-import { setupInstance, verifyInstance } from "../src/setup.ts";
+import { verifyInstance } from "../src/setup.ts";
 import { openDatabase } from "../src/storage/database.ts";
 import { FIRST_ADDRESS, SECOND_ADDRESS, SETUP } from "./fixtures.ts";
 import { startMintFixture } from "./mint-fixture.ts";
@@ -14,11 +16,15 @@ let database: string;
 let mint: ReturnType<typeof startMintFixture>;
 let service: Awaited<ReturnType<typeof startReceivingServer>> | undefined;
 let messages: string[];
+let thresholdSats = 1000;
+function config() { return { ...SETUP, mintUrl: mint.url, payoutThresholdSats: thresholdSats }; }
+async function verify() { return verifyInstance(database, config()); }
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "soi-payout-"));
   database = join(directory, "wallet.sqlite");
   mint = startMintFixture();
   messages = [];
+  thresholdSats = 1000;
 });
 afterEach(async () => {
   await service?.stop();
@@ -26,9 +32,9 @@ afterEach(async () => {
   await mint?.stop();
   rmSync(directory, { recursive: true, force: true });
 });
-async function start(threshold = 1000) {
-  await setupInstance(database, { ...SETUP, mintUrl: mint.url, payoutThresholdSats: threshold });
-  service = await startReceivingServer({ database, port: 0, onPayout: (message) => messages.push(message),
+async function start(threshold = thresholdSats) {
+  thresholdSats = threshold;
+  service = await startReceivingServer({ database, config: config(), port: 0, onPayout: (message) => messages.push(message),
     timing: { pollingIntervalMs: 500, processorIntervalMs: 20 } });
 }
 async function receive(amount: number) {
@@ -58,9 +64,9 @@ async function operations() {
 test("below threshold is inactive; equality sweeps to index zero using the lowest fee identifier and retains change", async () => {
   await start();
   await receive(999);
-  await eventually(async () => (await verifyInstance(database)).accumulatedBalanceSats === "999");
+  await eventually(async () => (await verify()).accumulatedBalanceSats === "999");
   expect(mint.melts.size).toBe(0);
-  expect((await verifyInstance(database)).config.nextPayoutIndex).toBe(0);
+  expect((await verify()).config.nextPayoutIndex).toBe(0);
   await receive(1);
   await eventually(async () => (await operations())[0]?.state === "finalized");
   const { quote } = mint.submissions[0]!;
@@ -68,8 +74,8 @@ test("below threshold is inactive; equality sweeps to index zero using the lowes
   expect(quote.amount).toBe(990);
   expect(quote.selected_fee_index).toBe(7);
   expect(mint.state.meltRequests).toBe(1);
-  expect((await verifyInstance(database)).config.nextPayoutIndex).toBe(1);
-  expect((await verifyInstance(database)).accumulatedBalanceSats).toBe("3");
+  expect((await verify()).config.nextPayoutIndex).toBe(1);
+  expect((await verify()).accumulatedBalanceSats).toBe("3");
   const [operation] = await operations();
   expect(operation?.state).toBe("finalized");
   if (operation?.state === "finalized") {
@@ -78,7 +84,7 @@ test("below threshold is inactive; equality sweeps to index zero using the lowes
     expect(operation.finalizedData?.outpoint).toBe(`${"ab".repeat(32)}:0`);
   }
   await service!.stop(); service = undefined;
-  expect((await verifyInstance(database)).accumulatedBalanceSats).toBe("3");
+  expect((await verify()).accumulatedBalanceSats).toBe("3");
 }, 40000);
 
 test("above threshold sweeps the balance including positive input fees, not a threshold-sized amount", async () => {
@@ -90,7 +96,7 @@ test("above threshold sweeps the balance including positive input fees, not a th
   const fee = submission.inputs.length;
   expect(submission.quote.amount).toBe(2048 - fee - 10);
   expect(submission.quote.amount).toBeGreaterThan(1000);
-  expect((await verifyInstance(database)).accumulatedBalanceSats).toBe("3");
+  expect((await verify()).accumulatedBalanceSats).toBe("3");
 }, 40000);
 
 test("new receipts can pay a second address while the first payout is pending; reservations cannot be spent twice", async () => {
@@ -98,16 +104,16 @@ test("new receipts can pay a second address while the first payout is pending; r
   await start();
   await receive(1000);
   await eventually(async () => (await operations())[0]?.state === "pending");
-  expect((await verifyInstance(database)).accumulatedBalanceSats).toBe("0");
+  expect((await verify()).accumulatedBalanceSats).toBe("0");
   await Promise.all([receive(600), receive(400)]);
   await eventually(async () => (await operations()).filter((op) => op?.state === "pending").length === 2);
   expect(mint.submissions.map(({ quote }) => quote.request)).toEqual([FIRST_ADDRESS, SECOND_ADDRESS]);
   const firstSecrets = new Set(mint.submissions[0]!.inputs.map((p) => p.secret));
   expect(mint.submissions[1]!.inputs.some((p) => firstSecrets.has(p.secret))).toBe(false);
-  expect((await verifyInstance(database)).config.nextPayoutIndex).toBe(2);
+  expect((await verify()).config.nextPayoutIndex).toBe(2);
   mint.submissions.forEach(({ quote }) => mint.settle(quote.quote));
   await eventually(async () => (await operations()).every((op) => op?.state === "finalized"));
-  expect((await verifyInstance(database)).accumulatedBalanceSats).toBe("6");
+  expect((await verify()).accumulatedBalanceSats).toBe("6");
 }, 40000);
 
 test("underfunded pre-swaps are cancelled and requoted before any submission", async () => {
@@ -120,7 +126,7 @@ test("underfunded pre-swaps are cancelled and requoted before any submission", a
   const submission = mint.submissions[0]!;
   expect(submission.quote.amount + 10 + submission.inputs.length * 25).toBeLessThanOrEqual(
     submission.inputs.reduce((sum, p) => sum + p.amount, 0));
-  expect((await verifyInstance(database)).config.nextPayoutIndex).toBe(1);
+  expect((await verify()).config.nextPayoutIndex).toBe(1);
 }, 40000);
 
 for (const scenario of ["unaffordable", "out-of-range", "quote failure"] as const) {
@@ -132,8 +138,8 @@ for (const scenario of ["unaffordable", "out-of-range", "quote failure"] as cons
     await receive(1000);
     await eventually(() => messages.some((message) => /cannot cover|maximum payout|could not complete/.test(message)));
     expect(mint.state.meltRequests).toBe(0);
-    expect((await verifyInstance(database)).accumulatedBalanceSats).toBe("1000");
-    expect((await verifyInstance(database)).config.nextPayoutIndex).toBe(1);
+    expect((await verify()).accumulatedBalanceSats).toBe("1000");
+    expect((await verify()).config.nextPayoutIndex).toBe(1);
   }, 40000);
 }
 
@@ -147,22 +153,19 @@ test("restart reconciles a submitted payout without replay or index rollback", a
   await start();
   await eventually(async () => (await operations())[0]?.state === "finalized");
   expect(mint.state.meltRequests).toBe(1);
-  expect((await verifyInstance(database)).config.nextPayoutIndex).toBe(1);
-  expect((await verifyInstance(database)).accumulatedBalanceSats).toBe("3");
+  expect((await verify()).config.nextPayoutIndex).toBe(1);
+  expect((await verify()).accumulatedBalanceSats).toBe("3");
 }, 40000);
 
 test("startup sweeps persisted spendable funds and keeps the allocated index after reopening", async () => {
   await start(2000);
   await receive(1000);
-  await eventually(async () => (await verifyInstance(database)).accumulatedBalanceSats === "1000");
+  await eventually(async () => (await verify()).accumulatedBalanceSats === "1000");
   await service!.stop(); service = undefined;
-  const connection = openDatabase(database, false);
-  connection.sqlite.query("UPDATE soi_settings SET value = '1000' WHERE key = 'payoutThresholdSats'").run();
-  connection.close();
-  await start();
+  await start(1000);
   await eventually(async () => (await operations())[0]?.state === "finalized");
   expect(mint.submissions[0]!.quote.request).toBe(FIRST_ADDRESS);
-  expect((await verifyInstance(database)).config.nextPayoutIndex).toBe(1);
+  expect((await verify()).config.nextPayoutIndex).toBe(1);
 }, 40000);
 
 test("Coco executes an affordable pre-swap and accounts for both sets of input fees", async () => {
@@ -176,17 +179,63 @@ test("Coco executes an affordable pre-swap and accounts for both sets of input f
   const submission = mint.submissions[0]!;
   expect(submission.quote.amount + 10 + submission.inputs.length * 15).toBeLessThanOrEqual(
     submission.inputs.reduce((sum, p) => sum + p.amount, 0));
-  expect((await verifyInstance(database)).config.nextPayoutIndex).toBe(1);
+  expect((await verify()).config.nextPayoutIndex).toBe(1);
 }, 40000);
 
 test("an exhausted payout index refuses new payouts without changing wallet funds", async () => {
   await start();
   const connection = openDatabase(database, false);
-  connection.sqlite.query("UPDATE soi_identity SET next_payout_index = 2147483648").run();
+  connection.sqlite.query("UPDATE soi_destination SET next_payout_index = 2147483648").run();
   connection.close();
   await receive(1000);
   await eventually(() => messages.some((message) => message.includes("Payout index must be an unhardened integer")));
   expect(mint.melts.size).toBe(0);
-  expect((await verifyInstance(database)).accumulatedBalanceSats).toBe("1000");
-  expect((await verifyInstance(database)).config.nextPayoutIndex).toBe(2147483648);
+  expect((await verify()).accumulatedBalanceSats).toBe("1000");
+  expect((await verify()).config.nextPayoutIndex).toBe(2147483648);
+}, 40000);
+
+
+test("switching mint and identity preserves old funds and recovers submitted payouts without sweeping the old mint", async () => {
+  mint.state.pendingPayouts = true;
+  await start();
+  await receive(1000);
+  await eventually(async () => (await operations())[0]?.state === "pending");
+  await receive(400);
+  await eventually(async () => (await verify()).accumulatedBalanceSats === "400");
+  const original = (await verify()).config;
+  await service!.stop(); service = undefined;
+  mint.settle(mint.submissions[0]!.quote.quote);
+  const other = startMintFixture();
+  const key = HDKey.fromMasterSeed(new Uint8Array(32).fill(3)).derive("m/84'/0'/0'").publicExtendedKey;
+  const changed = { ...config(), username: "bob", destinationKey: key, mintUrl: other.url, payoutThresholdSats: 100 };
+  try {
+    service = await startReceivingServer({ database, config: changed, port: 0,
+      timing: { pollingIntervalMs: 500, processorIntervalMs: 20 }, onPayout: (message) => messages.push(message) });
+    expect(service.status).toBe("ready");
+    await eventually(async () => (await operations())[0]?.state === "finalized");
+    expect(mint.state.meltRequests).toBe(1);
+    expect(mint.submissions[0]!.quote.request).toBe(FIRST_ADDRESS);
+    expect((await verifyInstance(database, config())).accumulatedBalanceSats).toBe("403");
+    const current = await verifyInstance(database, changed);
+    expect(current.accumulatedBalanceSats).toBe("0");
+    expect(current.config.destinationId).not.toBe(original.destinationId);
+    expect(current.config.nextPayoutIndex).toBe(0);
+    expect(other.state.meltRequests).toBe(0);
+    const base = `http://127.0.0.1:${service.port}`;
+    expect((await fetch(`${base}/.well-known/lnurlp/alice`)).status).toBe(404);
+    expect((await fetch(`${base}/.well-known/lnurlp/bob`)).status).toBe(200);
+    const invoice = await fetch(`${base}/lnurlp/bob/callback?amount=500000`);
+    expect(invoice.status).toBe(200);
+    other.pay((await invoice.json() as { pr: string }).pr);
+    await eventually(() => other.state.meltRequests === 1);
+    await eventually(async () => (await verifyInstance(database, changed)).accumulatedBalanceSats === "3");
+    expect(other.submissions[0]!.quote.request).toBe(derivePayoutAddress(key, 0));
+    expect(mint.state.meltRequests).toBe(1);
+    expect((await verifyInstance(database, config())).accumulatedBalanceSats).toBe("403");
+    expect((await verifyInstance(database, config())).config.nextPayoutIndex).toBe(1);
+    expect((await verifyInstance(database, changed)).config.nextPayoutIndex).toBe(1);
+  } finally {
+    await service?.stop(); service = undefined;
+    await other.stop();
+  }
 }, 40000);
