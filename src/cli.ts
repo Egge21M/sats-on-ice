@@ -4,6 +4,7 @@ import { UserError } from "./errors.ts";
 import { setupInstance, verifyInstance, type SetupSummary } from "./setup.ts";
 import { startReceivingServer } from "./server.ts";
 import { formatStatus, inspectStatus } from "./status.ts";
+import { exportBackup } from "./backup.ts";
 
 function printSummary(summary: SetupSummary) {
   const { config } = summary;
@@ -36,6 +37,15 @@ export async function runCli(argv: string[]) {
   program.command("status")
     .description("Inspect local wallet progress, next-start selection and observable server readiness without processing payments")
     .action(async () => console.log(formatStatus(await inspectStatus(program.opts().database))));
+
+  program.command("backup <output>")
+    .description("Export a consistent complete SQLite snapshot to a new file, including while serve is running")
+    .action((output: string) => {
+      const filename = exportBackup(program.opts().database, output);
+      console.log(`Backup saved: ${JSON.stringify(filename)}`);
+      console.log("Contains the unencrypted Cashu seed and ecash. Store securely and retain runtime environment configuration separately.");
+      console.log("Snapshot only; payments were not reconciled. Older backups can omit later activity and permit payout address reuse.");
+    });
 
   program.command("serve")
     .description("Serve the Lightning Address and claim incoming payments (one server per database)")
