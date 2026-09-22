@@ -1,6 +1,6 @@
 # Lightning Address receiving
 
-Implementation and design decisions for [receiving issue #3](https://github.com/Egge21M/sats-on-ice/issues/3), following the owner interview on 2026-09-20. Receiving is verified against a controlled mint and named payer client below; live Lightning routing and Fly deployment remain unverified.
+Implementation and design decisions for [receiving issue #3](https://github.com/Egge21M/sats-on-ice/issues/3), following the owner interview on 2026-09-20. Receiving is verified against a controlled mint and named payer client below; live Lightning routing remains unverified. The subsequent [Fly deployment guide](fly-deployment.md) records public HTTPS receiving with a simulated mint on a disposable Fly deployment.
 
 ## Agreed receiving behavior
 
@@ -64,4 +64,4 @@ Startup regression checks cover a fresh env-configured server without prior setu
 
 Runtime processor impairment handling and Fly warm-resume reconciliation remain explicitly deferred. A successful startup recovery call is not a guarantee that every pending operation was reconciled; local `verify` displays locally recorded spendable ecash.
 
-Threshold payouts are implemented and documented in the [payout design](threshold-payouts.md). Fly deployment and warm-resume handling remain later issues. The [local setup design](local-setup.md) describes the implemented baseline and its verification limits.
+Threshold payouts are implemented and documented in the [payout design](threshold-payouts.md). The [Fly deployment guide](fly-deployment.md) covers container packaging, persistent bootstrap and its controlled verification; warm-resume handling remains issue #8. The [local setup design](local-setup.md) describes the implemented baseline and its verification limits.

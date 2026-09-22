@@ -2,7 +2,7 @@
 
 A self-hosted, MIT-licensed Lightning Address service that accumulates payments as Cashu ecash and sweeps them to a Bitcoin wallet when a configured threshold is reached.
 
-Local setup, wallet status, complete database backups, Lightning Address receiving and automatic on-chain payouts are implemented. Fly.io deployment and warm-resume handling remain subsequent slices. See the [v1 design](https://github.com/Egge21M/sats-on-ice/issues/1), [receiving evidence](docs/design/lightning-receiving.md) and [payout evidence](docs/design/threshold-payouts.md).
+Local setup, wallet status, complete database backups, Lightning Address receiving and automatic on-chain payouts are implemented. A Docker image and single-Machine Fly.io configuration are included; payment correctness across warm resume remains issue #8. See the [v1 design](https://github.com/Egge21M/sats-on-ice/issues/1), [receiving evidence](docs/design/lightning-receiving.md) and [payout evidence](docs/design/threshold-payouts.md).
 
 ## Configure and start an instance
 
@@ -70,7 +70,7 @@ The server checks fresh mint information for enabled `bolt11` receiving and `onc
 
 Known limitation accepted for this slice: the fresh startup check does not refresh Coco's separate five-minute mint-information cache. After a mint changes its amount limits, a restart can advertise the new range while invoice creation still rejects newly allowed amounts with HTTP 502 until Coco refreshes its cache. Discovery retains the limits from startup; later mint changes are not automatically reflected there. See the [receiving design](docs/design/lightning-receiving.md#confirmed-implementation-constraints).
 
-The only public routes are `GET /.well-known/lnurlp/alice` and its advertised callback, `GET /lnurlp/alice/callback`. To inspect discovery locally through the expected proxy headers:
+The payment routes are `GET /.well-known/lnurlp/alice` and its advertised callback, `GET /lnurlp/alice/callback`. `GET /readyz` provides a minimal deployment check: HTTP 200 with `{"ready":true}` after startup validation, otherwise HTTP 503 with `{"ready":false}`. It exposes no wallet details and does not probe the mint or establish fresh reconciliation. To inspect discovery locally through the expected proxy headers:
 
 ```sh
 curl -H 'Host: pay.example' http://127.0.0.1:3000/.well-known/lnurlp/alice
@@ -111,6 +111,12 @@ bun test tests/payouts.test.ts
 ```
 
 It uses real Coco operations and Cashu proof verification, with simulated Bitcoin settlement and no real funds. See [payout design and evidence](docs/design/threshold-payouts.md). Fly suspension may defer all processing until a later request or explicit wake; warm-resume verification remains issue #8.
+
+## Deploy on Fly.io
+
+Use the pinned [Dockerfile](Dockerfile) and copy [fly.toml](fly.toml) to `fly.local.toml`. Set your app name, region and runtime environment, create one `soi_data` volume, and deploy with `--ha=false`. The server initializes `/data/sats-on-ice.sqlite` on the mounted Machine; no setup command or release-time migration is required. Compare the first payout address using the on-volume CLI before receiving payments.
+
+The [Fly deployment guide](docs/design/fly-deployment.md) covers bootstrap, environment changes, readiness, local CLI commands, restart/redeploy verification and a controlled test mint. Keep one wallet Machine and one volume; this accepts downtime during deployments and host failures. Fly controls idle suspension and incoming-request wake. Payment work can wait while asleep, and warm-resume reconciliation remains a separate verification slice.
 
 ## Persistence
 
