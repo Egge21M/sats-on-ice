@@ -150,6 +150,47 @@ test("automatically retries temporary mint failure while refusing payment reques
   expect(mint.state.infoRequests).toBeGreaterThan(1);
 });
 
+test("rejects a different configured mint before recovering paid invoices", async () => {
+  await start();
+  const invoice = ((await (await request("/lnurlp/alice/callback?amount=32000")).json()) as { pr: string }).pr;
+  await service!.stop(); service = undefined;
+  mint.pay(invoice);
+  const otherMint = startMintFixture();
+  const connection = openDatabase(database, false);
+  try {
+    connection.sqlite.query("UPDATE soi_settings SET value = ? WHERE key = 'mintUrl'").run(JSON.stringify(otherMint.url));
+    await expect(start()).rejects.toThrow("different mint");
+    expect(mint.state.issuanceAttempts).toBe(0);
+    expect((await inspect()).operations).toHaveLength(1);
+  } finally {
+    connection.close();
+    await otherMint.stop();
+  }
+});
+
+test("failed factory recovery leaves no workers claiming invoices after shutdown, and can retry", async () => {
+  await start();
+  const invoice = ((await (await request("/lnurlp/alice/callback?amount=32000")).json()) as { pr: string }).pr;
+  await service!.stop(); service = undefined;
+  const connection = openDatabase(database, false);
+  try {
+    // Force a real repository failure during the factory's send recovery sweep.
+    connection.sqlite.exec("ALTER TABLE coco_cashu_send_operations RENAME TO unavailable_send_operations");
+    await start();
+    expect(service!.status).toBe("retrying");
+    expect((await request("/.well-known/lnurlp/alice")).status).toBe(503);
+    await service!.stop(); service = undefined;
+    mint.pay(invoice);
+    await Bun.sleep(600);
+    expect(mint.state.issuanceAttempts).toBe(0);
+    expect((await inspect()).operations).toHaveLength(1);
+    connection.sqlite.exec("ALTER TABLE unavailable_send_operations RENAME TO coco_cashu_send_operations");
+    await start();
+    await eventually(async () => (await verifyInstance(database)).accumulatedBalanceSats === "32", "claim after repaired startup");
+    expect(mint.state.issuanceCount).toBe(1);
+  } finally { connection.close(); }
+}, 20_000);
+
 test("rejects incompatible capabilities on a fresh startup even with cached mint information", async () => {
   await start();
   await service!.stop();

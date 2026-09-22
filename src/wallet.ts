@@ -16,7 +16,7 @@ export async function openLocalWallet(sqlite: Database, seedGetter: () => Promis
   const repo = new SqliteRepositories({ database: sqlite });
   await repo.init();
   // initializeCoco() also resumes persisted operations even with workers disabled.
-  // The server slice will own that active lifecycle separately.
+  // The receiving wallet owns that active lifecycle separately.
   const manager = new Manager(repo, seedGetter);
   try {
     await manager.initPlugins();
