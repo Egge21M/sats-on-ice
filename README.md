@@ -2,7 +2,7 @@
 
 A self-hosted, MIT-licensed Lightning Address service that accumulates payments as Cashu ecash and sweeps them to a Bitcoin wallet when a configured threshold is reached.
 
-Local setup, wallet status, Lightning Address receiving and automatic on-chain payouts are implemented. Fly.io deployment and warm-resume handling remain subsequent slices. See the [v1 design](https://github.com/Egge21M/sats-on-ice/issues/1), [receiving evidence](docs/design/lightning-receiving.md) and [payout evidence](docs/design/threshold-payouts.md).
+Local setup, wallet status, complete database backups, Lightning Address receiving and automatic on-chain payouts are implemented. Fly.io deployment and warm-resume handling remain subsequent slices. See the [v1 design](https://github.com/Egge21M/sats-on-ice/issues/1), [receiving evidence](docs/design/lightning-receiving.md) and [payout evidence](docs/design/threshold-payouts.md).
 
 ## Configure and start an instance
 
@@ -17,7 +17,7 @@ export SOI_DATABASE=./data/sats-on-ice.sqlite
 bun run cli serve
 ```
 
-The server initializes a fresh database and Cashu seed automatically; no prior `setup` command is required. Mint URL and threshold are required environment values on every invocation and are not stored as application settings. On a fresh database, username and xpub are also required. On later starts, omit either to reuse that value from the last active identity. Valid changed values select or create the corresponding identity without deleting old records or replacing the Cashu seed.
+The server initializes a fresh database and Cashu seed automatically; no prior `setup` command is required. Mint URL and threshold are required for `serve`, `setup`, `verify` and `status` and are not stored as application settings. `backup` needs only the database and output paths. On a fresh database, username and xpub are also required. On later starts, omit either to reuse that value from the last active identity. Valid changed values select or create the corresponding identity without deleting old records or replacing the Cashu seed.
 
 Supply a **Bitcoin mainnet native SegWit account xpub or zpub** from a fresh account dedicated to this instance, typically `m/84'/0'/0'`. Private keys, testnet keys, descriptors and other address types are unsupported. For an offline address preview before starting to receive payments:
 
@@ -123,7 +123,21 @@ One SQLite file holds the durable instance state; retain the runtime environment
 
 Each identity references a destination, and each normalized xpub owns one next payout index shared across its identities. A singleton active reference supplies fallback identity values. Seed storage is separate. Initial seed creation and identity selection share an immediate transaction; Coco migrations run afterward and can be retried with the persisted seed intact. Application and Coco migration histories remain separate.
 
-The database contains the **unencrypted Cashu seed and spendable ecash**. New data directories use mode `0700`; the database and any existing WAL/SHM files are tightened to `0600` before opening. Keep it on persistent storage and run one owner instance per database. SQLite uses WAL, so an ordinary copy of an open `.sqlite` file alone is not a complete backup. A consistent backup command is planned in [ticket #6](https://github.com/Egge21M/sats-on-ice/issues/6).
+The database contains the **unencrypted Cashu seed and spendable ecash**. New data directories use mode `0700`; the database and any existing WAL/SHM files are tightened to `0600` before opening. Keep it on persistent storage and run one owner instance per database. SQLite uses WAL, so an ordinary copy of an open `.sqlite` file alone is not a complete backup.
+
+## Back up and restore
+
+Export while the server is running or stopped; choose a new filename each time:
+
+```sh
+bun run cli --database ./data/sats-on-ice.sqlite backup ./backups/wallet-2026-09-22.sqlite
+```
+
+`backup` captures every table in one consistent SQLite snapshot, including committed WAL data, the seed, identity history, active identity, destination counters, all mints' wallet state and both migration histories. It requires no mint/identity environment, applies no migrations and starts no payment processor. Existing output files are never overwritten. The completed snapshot is checked and saved with mode `0600`; new parent directories use `0700`. Download and store it securely away from the database host, together with separately retained environment configuration. The backup contains **unencrypted seed and spendable ecash**.
+
+Restore manually with every server using this wallet stopped. Keep the original database and its journal files together, retain the chosen backup unchanged, and copy that backup into a new working directory. Inspect that copy with `status` before starting `serve`; review the restored identity, per-mint balances, pending destinations and counters, and review environment overrides. Restore mint URL and threshold separately. Omitted username/xpub values reuse the restored active identity; supplied values select or create an identity at startup. Run only one active copy of the wallet.
+
+**An older backup can lose later receipts, operations, identity changes and allocated indices. Restoring an older counter can reuse payout addresses.** SQLite consistency does not reconcile the mint or recover missing later activity. There is no seed-only recovery guarantee or custom recovery engine. See the [backup and manual restore guide](docs/design/wallet-backup.md) for commands, Fly download/snapshot guidance and the controlled recovery walkthrough.
 
 ## Development
 

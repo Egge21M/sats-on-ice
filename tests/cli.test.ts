@@ -73,3 +73,25 @@ test("serve rejects invalid ports and missing runtime policy before creating sta
   expect(missingStatusPolicy.stderr).toContain("SOI_MINT_URL");
   expect(existsSync(env.SOI_DATABASE!)).toBe(false);
 });
+
+test("backup needs no runtime policy, keeps secrets out of output and refuses replacement", async () => {
+  expect((await cli("setup")).code).toBe(0);
+  const connection = openDatabase(env.SOI_DATABASE!, false);
+  const seed = Buffer.from(new InstanceStore(connection.db).getSeed());
+  connection.close();
+  for (const key of ["SOI_MINT_URL", "SOI_PAYOUT_THRESHOLD_SATS", "SOI_USERNAME", "SOI_XPUB"]) delete env[key];
+  const output = join(directory, "backup.sqlite");
+  const results = await Promise.all([cli("backup", output), cli("backup", output)]);
+  expect(results.map((result) => result.code).sort()).toEqual([0, 1]);
+  expect(results.find((result) => result.code === 0)?.stdout).toContain("Backup saved");
+  expect(results.find((result) => result.code === 1)?.stderr).toContain("already exists");
+  const text = results.map((result) => result.stdout + result.stderr).join("");
+  expect(text).not.toContain(seed.toString("hex"));
+  expect(text).not.toContain(seed.toString("base64"));
+  expect((await cli("backup")).code).toBe(1);
+  env.SOI_DATABASE = join(directory, "missing.sqlite");
+  const missing = await cli("backup", join(directory, "missing-backup.sqlite"));
+  expect(missing.code).toBe(1);
+  expect(missing.stderr).toContain("Unable to export backup");
+  expect(existsSync(env.SOI_DATABASE)).toBe(false);
+});
