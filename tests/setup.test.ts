@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { Amount, Manager, type CoreProof } from "@cashu/coco-core";
 import { SqliteRepositories } from "@cashu/coco-sqlite-bun";
 import { HDKey } from "@scure/bip32";
@@ -7,10 +7,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { setupInstance, verifyInstance } from "../src/setup.ts";
-import { ConfigStore } from "../src/storage/config-store.ts";
+import { InstanceStore } from "../src/storage/instance-store.ts";
 import { openDatabase } from "../src/storage/database.ts";
-import { identity, settings, walletSecret } from "../src/storage/schema.ts";
+import { activeIdentity, destination, identity, walletSecret } from "../src/storage/schema.ts";
 import { FIRST_ADDRESS, SETUP, XPUB } from "./fixtures.ts";
+import { derivePayoutAddress } from "../src/destination.ts";
 
 let directory: string;
 let path: string;
@@ -22,136 +23,155 @@ afterEach(() => rmSync(directory, { recursive: true, force: true }));
 
 function seedDigest(): string {
   const connection = openDatabase(path, false);
-  try {
-    return new Bun.CryptoHasher("sha256").update(new ConfigStore(connection.db).getSeed()).digest("hex");
-  } finally {
-    connection.close();
-  }
+  try { return new Bun.CryptoHasher("sha256").update(new InstanceStore(connection.db).getSeed()).digest("hex"); }
+  finally { connection.close(); }
 }
+const policy = { mintUrl: SETUP.mintUrl, payoutThresholdSats: SETUP.payoutThresholdSats };
 
-describe("local setup", () => {
-  test("tightens existing WAL and SHM permissions before reopening wallet state", async () => {
-    await setupInstance(path, SETUP);
-    const held = openDatabase(path, false);
-    try {
-      held.sqlite.query("SELECT * FROM soi_identity").all();
-      for (const suffix of ["-wal", "-shm"]) {
-        expect(existsSync(`${path}${suffix}`)).toBe(true);
-        chmodSync(`${path}${suffix}`, 0o666);
-      }
-      expect((await verifyInstance(path)).accumulatedBalanceSats).toBe("0");
-      for (const suffix of ["", "-wal", "-shm"]) expect(statSync(`${path}${suffix}`).mode & 0o777).toBe(0o600);
-    } finally { held.close(); }
-  });
-
-  test("creates zero-balance setup offline, reopens it, and never consumes the preview index", async () => {
-    const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(
-      () => { throw new Error("Unexpected network access"); },
-      { preconnect: () => { throw new Error("Unexpected network access"); } },
-    ));
-    try {
-      const result = await setupInstance(path, SETUP);
-      expect(result).toEqual({
-        created: true,
-        config: { ...SETUP, destinationKey: XPUB, nextPayoutIndex: 0 },
-        firstPayoutAddress: FIRST_ADDRESS,
-        accumulatedBalanceSats: "0",
-      });
-      const digest = seedDigest();
-      expect(await setupInstance(path, { ...SETUP, destinationKey: XPUB })).toEqual({ ...result, created: false });
-      expect(await verifyInstance(path)).toEqual({ ...result, created: false });
-      expect(seedDigest()).toBe(digest);
-      expect(statSync(path).mode & 0o777).toBe(0o600);
-      expect(fetch).not.toHaveBeenCalled();
-    } finally {
-      fetch.mockRestore();
-    }
-  });
-
-  test.each(["https://mint.example", "https://mint.example/cashu"])("repeated setup preserves state with trailing slashes on %s", async (mintUrl) => {
-    const input = { ...SETUP, mintUrl: `${mintUrl}///` };
-    const result = await setupInstance(path, input);
+test("setup and inspection stay offline, preserve the seed, and require no persisted mint or threshold", async () => {
+  const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(
+    () => { throw new Error("Unexpected network access"); },
+    { preconnect: () => { throw new Error("Unexpected network access"); } },
+  ));
+  try {
+    const result = await setupInstance(path, SETUP);
+    expect(result).toEqual({ created: true, config: { ...SETUP, destinationKey: XPUB,
+      identityId: 1, destinationId: 1, nextPayoutIndex: 0 }, firstPayoutAddress: FIRST_ADDRESS, accumulatedBalanceSats: "0" });
     const digest = seedDigest();
-    expect(result.config.mintUrl).toBe(mintUrl);
-    expect(await setupInstance(path, input)).toEqual({ ...result, created: false });
-    expect(await setupInstance(path, { ...SETUP, mintUrl })).toEqual({ ...result, created: false });
-    expect(await verifyInstance(path)).toEqual({ ...result, created: false });
+    expect(await setupInstance(path, { ...SETUP, destinationKey: XPUB })).toEqual({ ...result, created: false });
+    expect(await verifyInstance(path, policy)).toEqual({ ...result, created: false });
     expect(seedDigest()).toBe(digest);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(fetch).not.toHaveBeenCalled();
     const connection = openDatabase(path, false);
-    try {
-      expect(connection.db.select().from(settings).where(eq(settings.key, "mintUrl")).get()?.value).toBe(JSON.stringify(mintUrl));
-    } finally {
-      connection.close();
-    }
-  });
+    try { expect(connection.sqlite.query("SELECT name FROM sqlite_master WHERE name = 'soi_settings'").all()).toEqual([]); }
+    finally { connection.close(); }
+  } finally { fetch.mockRestore(); }
+});
 
-  test("rejects conflicting setup without changing seed, identity, mint or index", async () => {
-    await setupInstance(path, SETUP);
-    const digest = seedDigest();
-    const connection = openDatabase(path, false);
-    connection.db.update(identity).set({ nextPayoutIndex: 7 }).run();
-    connection.close();
+test("identity switches share destination counters, reuse prior identities and fall back one omitted field at a time", async () => {
+  const first = await setupInstance(path, SETUP);
+  const digest = seedDigest();
+  const connection = openDatabase(path, false);
+  const store = new InstanceStore(connection.db);
+  const allocate = (id: number) => connection.sqlite.transaction(() => store.allocatePayout(id)).immediate();
+  try {
+    expect(allocate(first.config.destinationId).index).toBe(0);
+    const renamed = await setupInstance(path, { ...policy, username: "bob" });
+    expect(renamed.config.destinationId).toBe(first.config.destinationId);
+    expect(renamed.config.nextPayoutIndex).toBe(1);
+    expect(renamed.config.identityId).not.toBe(first.config.identityId);
+    expect(allocate(renamed.config.destinationId).index).toBe(1);
     const otherKey = HDKey.fromMasterSeed(new Uint8Array(32).fill(2)).derive("m/84'/0'/0'").publicExtendedKey;
-    for (const patch of [{ username: "bob" }, { mintUrl: "https://other.example" }, { destinationKey: otherKey }, { payoutThresholdSats: 2000 }]) {
-      await expect(setupInstance(path, { ...SETUP, ...patch })).rejects.toThrow("Setup already exists");
-    }
-    const reopened = await setupInstance(path, SETUP);
-    expect(reopened.config).toEqual({ ...SETUP, destinationKey: XPUB, nextPayoutIndex: 7 });
+    const changed = await setupInstance(path, { ...policy, destinationKey: otherKey });
+    expect(changed.config.username).toBe("bob");
+    expect(changed.config.nextPayoutIndex).toBe(0);
+    expect(changed.config.destinationId).not.toBe(first.config.destinationId);
+    expect(allocate(changed.config.destinationId).index).toBe(0);
+    // Allocations are bound to a running server's destination, not the mutable active selection.
+    expect(allocate(first.config.destinationId).index).toBe(2);
+    const returned = await setupInstance(path, SETUP);
+    expect(returned.created).toBe(false);
+    expect(returned.config.identityId).toBe(first.config.identityId);
+    expect(returned.config.nextPayoutIndex).toBe(3);
+    const next = allocate(first.config.destinationId);
+    expect(next).toEqual({ index: 3, address: derivePayoutAddress(XPUB, 3) });
+    expect((await verifyInstance(path, policy)).config.identityId).toBe(first.config.identityId);
+    expect(connection.db.select().from(identity).all()).toHaveLength(3);
+    expect(connection.db.select().from(destination).all()).toHaveLength(2);
     expect(seedDigest()).toBe(digest);
-  });
+  } finally { connection.close(); }
+});
 
-  test("invalid input and verification of a missing database do not create wallet files", async () => {
-    await expect(setupInstance(path, { ...SETUP, payoutThresholdSats: 0 })).rejects.toThrow();
-    await expect(verifyInstance(path)).rejects.toThrow("Run setup first");
-    expect(existsSync(path)).toBe(false);
-  });
+test("mint and threshold changes take effect without creating identities or replacing the seed", async () => {
+  const first = await setupInstance(path, SETUP);
+  const digest = seedDigest();
+  const changed = await setupInstance(path, { ...policy, mintUrl: "https://other.example///", payoutThresholdSats: 7 });
+  expect(changed.config.identityId).toBe(first.config.identityId);
+  expect(changed.config.mintUrl).toBe("https://other.example");
+  expect(changed.config.payoutThresholdSats).toBe(7);
+  expect((await verifyInstance(path, policy)).config.mintUrl).toBe(SETUP.mintUrl);
+  expect(seedDigest()).toBe(digest);
+});
 
-  test("a failed setup transaction rolls back the seed, settings and identity together", async () => {
-    const connection = openDatabase(path, true);
-    connection.sqlite.exec("CREATE TRIGGER reject_identity BEFORE INSERT ON soi_identity BEGIN SELECT RAISE(ABORT, 'test failure'); END");
+test("verification never creates or activates a requested identity", async () => {
+  const first = await setupInstance(path, SETUP);
+  const second = await setupInstance(path, { ...policy, username: "bob" });
+  expect((await verifyInstance(path, SETUP)).config.identityId).toBe(first.config.identityId);
+  expect((await verifyInstance(path, policy)).config.identityId).toBe(second.config.identityId);
+  await expect(verifyInstance(path, { ...policy, username: "carol" })).rejects.toThrow("not been initialized");
+  expect((await verifyInstance(path, policy)).config.identityId).toBe(second.config.identityId);
+});
+
+test("fresh instances require identity values; invalid configuration never creates a database", async () => {
+  await expect(setupInstance(path, { ...SETUP, payoutThresholdSats: 0 })).rejects.toThrow();
+  expect(existsSync(path)).toBe(false);
+  await expect(verifyInstance(path, policy)).rejects.toThrow("Run setup first");
+  expect(existsSync(path)).toBe(false);
+  await expect(setupInstance(path, policy)).rejects.toThrow("SOI_USERNAME and SOI_XPUB");
+  const connection = openDatabase(path, false);
+  try {
+    expect(connection.db.select().from(walletSecret).all()).toHaveLength(0);
+    expect(connection.db.select().from(identity).all()).toHaveLength(0);
+  } finally { connection.close(); }
+});
+
+test("identity selection and seed creation roll back together on persistence failure", async () => {
+  const connection = openDatabase(path, true);
+  try {
+    connection.sqlite.exec("CREATE TRIGGER reject_active BEFORE INSERT ON soi_active_identity BEGIN SELECT RAISE(ABORT, 'test failure'); END");
     await expect(setupInstance(path, SETUP)).rejects.toThrow();
-    for (const table of [walletSecret, settings, identity]) {
-      expect(connection.db.select().from(table).all().length).toBe(0);
-    }
-    connection.sqlite.exec("DROP TRIGGER reject_identity");
-    connection.close();
-    expect((await setupInstance(path, SETUP)).created).toBe(true);
-  });
+    for (const table of [walletSecret, destination, identity, activeIdentity]) expect(connection.db.select().from(table).all()).toHaveLength(0);
+    connection.sqlite.exec("DROP TRIGGER reject_active");
+    const first = await setupInstance(path, SETUP);
+    const digest = seedDigest();
+    connection.sqlite.exec("CREATE TRIGGER reject_switch BEFORE UPDATE ON soi_active_identity BEGIN SELECT RAISE(ABORT, 'test failure'); END");
+    await expect(setupInstance(path, { ...policy, username: "bob" })).rejects.toThrow();
+    expect((await verifyInstance(path, policy)).config.identityId).toBe(first.config.identityId);
+    expect(connection.db.select().from(identity).all()).toHaveLength(1);
+    expect(seedDigest()).toBe(digest);
+  } finally { connection.close(); }
+});
 
-  test("does not regenerate a missing seed or adopt orphaned Coco tables", async () => {
-    await setupInstance(path, SETUP);
-    const connection = openDatabase(path, false);
-    connection.db.delete(walletSecret).run();
+test("missing seed or incomplete active identity is never silently replaced", async () => {
+  await setupInstance(path, SETUP);
+  const connection = openDatabase(path, false);
+  try {
+    connection.db.delete(activeIdentity).run();
     await expect(setupInstance(path, SETUP)).rejects.toThrow("incomplete");
-    expect(connection.db.select().from(walletSecret).all().length).toBe(0);
-    connection.db.delete(identity).run();
-    connection.db.delete(settings).run();
+    connection.db.delete(walletSecret).run();
     await expect(setupInstance(path, SETUP)).rejects.toThrow("replacement seed will not be generated");
-    connection.close();
-  });
+    connection.db.delete(identity).run();
+    connection.db.delete(destination).run();
+    await expect(setupInstance(path, SETUP)).rejects.toThrow("replacement seed will not be generated");
+    expect(connection.db.select().from(walletSecret).all()).toHaveLength(0);
+  } finally { connection.close(); }
+});
 
-  test("validates stored values by setting key and preserves invalid data for recovery", async () => {
-    await setupInstance(path, SETUP);
-    const connection = openDatabase(path, false);
-    connection.db.update(settings).set({ value: JSON.stringify("1000") }).where(eq(settings.key, "payoutThresholdSats")).run();
-    await expect(verifyInstance(path)).rejects.toThrow("Stored configuration");
-    await expect(setupInstance(path, SETUP)).rejects.toThrow("Stored configuration");
-    expect(connection.db.select().from(settings).where(eq(settings.key, "payoutThresholdSats")).get()?.value).toBe('"1000"');
-    connection.close();
-  });
+test("stored identity validation and relational constraints protect counters and references", async () => {
+  const first = await setupInstance(path, SETUP);
+  const connection = openDatabase(path, false);
+  try {
+    expect(() => connection.db.insert(destination).values({ xpub: XPUB }).run()).toThrow();
+    expect(() => connection.db.insert(identity).values({ username: "alice", destinationId: first.config.destinationId }).run()).toThrow();
+    expect(() => connection.db.insert(identity).values({ username: "bob", destinationId: 999 }).run()).toThrow();
+    expect(() => connection.db.insert(activeIdentity).values({ id: 2, identityId: first.config.identityId }).run()).toThrow();
+    for (const index of [-1, 0.5, 0x80000001]) expect(() => connection.db.update(destination).set({ nextPayoutIndex: index }).run()).toThrow();
+    connection.db.update(identity).set({ username: "INVALID" }).run();
+    await expect(verifyInstance(path, policy)).rejects.toThrow("Stored identity");
+    expect(connection.db.select().from(identity).get()?.username).toBe("INVALID");
+  } finally { connection.close(); }
+});
 
-  test("SQLite enforces a singleton identity and integer nonnegative next payout index", async () => {
-    await setupInstance(path, SETUP);
-    const connection = openDatabase(path, false);
-    try {
-      expect(() => connection.db.insert(identity).values({ id: 2, username: "bob", destinationKey: XPUB }).run()).toThrow();
-      for (const index of [-1, 0.5, 0x80000001]) {
-        expect(() => connection.db.update(identity).set({ nextPayoutIndex: index }).run()).toThrow();
-      }
-    } finally {
-      connection.close();
-    }
-  });
+test("tightens existing WAL and SHM permissions before reopening wallet state", async () => {
+  await setupInstance(path, SETUP);
+  const held = openDatabase(path, false);
+  try {
+    held.sqlite.query("SELECT * FROM soi_identity").all();
+    for (const suffix of ["-wal", "-shm"]) { expect(existsSync(`${path}${suffix}`)).toBe(true); chmodSync(`${path}${suffix}`, 0o666); }
+    await verifyInstance(path, policy);
+    for (const suffix of ["", "-wal", "-shm"]) expect(statSync(path + suffix).mode & 0o777).toBe(0o600);
+  } finally { held.close(); }
 });
 
 test("local inspection sums spendable sats exactly and excludes reserved, inflight, spent and non-sat proofs", async () => {
@@ -167,7 +187,7 @@ test("local inspection sums spendable sats exactly and excludes reserved, inflig
       ...(index === 2 ? { usedByOperationId: "pending-test-payout" } : {}),
     }));
     await repo.proofRepository.saveProofs(SETUP.mintUrl, proofs);
-    expect((await verifyInstance(path)).accumulatedBalanceSats).toBe("9007199254740993");
+    expect((await verifyInstance(path, SETUP)).accumulatedBalanceSats).toBe("9007199254740993");
     expect((await setupInstance(path, SETUP)).accumulatedBalanceSats).toBe("9007199254740993");
   } finally { connection.close(); }
 });
@@ -178,7 +198,7 @@ test("both migration systems preserve application state, Coco counters, keyring 
   const connection = openDatabase(path, false);
   const repo = new SqliteRepositories({ database: connection.sqlite });
   await repo.init();
-  const store = new ConfigStore(connection.db);
+  const store = new InstanceStore(connection.db);
   // Exercise Coco's seed/keyring compatibility with a test-only offline manager.
   const wallet = new Manager(repo, async () => store.getSeed());
   const publicKey = (await wallet.keyring.generateKeyPair()).publicKeyHex;
@@ -193,11 +213,11 @@ test("both migration systems preserve application state, Coco counters, keyring 
     ...(index === 1 ? { usedByOperationId: "pending-test-payout" } : {}),
   }));
   await repo.proofRepository.saveProofs(SETUP.mintUrl, proofs);
-  connection.db.update(identity).set({ nextPayoutIndex: 5 }).run();
+  connection.db.update(destination).set({ nextPayoutIndex: 5 }).run();
   const migrationIds = connection.sqlite.query("SELECT id FROM coco_cashu_migrations ORDER BY id").all();
   await wallet.dispose();
   // Disposing Coco must leave the caller-owned shared SQLite connection open.
-  expect(store.load()?.nextPayoutIndex).toBe(5);
+  expect(store.load(policy)?.nextPayoutIndex).toBe(5);
   connection.close();
 
   const result = await setupInstance(path, SETUP);
@@ -207,7 +227,7 @@ test("both migration systems preserve application state, Coco counters, keyring 
   const reopened = openDatabase(path, false);
   const reopenedRepo = new SqliteRepositories({ database: reopened.sqlite });
   await reopenedRepo.init();
-  const reopenedWallet = new Manager(reopenedRepo, async () => new ConfigStore(reopened.db).getSeed());
+  const reopenedWallet = new Manager(reopenedRepo, async () => new InstanceStore(reopened.db).getSeed());
   try {
     expect((await reopenedWallet.keyring.getKeyPair(publicKey))?.publicKeyHex).toBe(publicKey);
     expect((await reopenedRepo.counterRepository.getCounter(SETUP.mintUrl, "0011223344556677"))?.counter).toBe(42);
@@ -215,7 +235,7 @@ test("both migration systems preserve application state, Coco counters, keyring 
     expect((await reopenedRepo.proofRepository.getInflightProofs()).length).toBe(1);
     expect((await reopenedRepo.proofRepository.getReservedProofs()).length).toBe(1);
     expect(reopened.sqlite.query("SELECT id FROM coco_cashu_migrations ORDER BY id").all()).toEqual(migrationIds);
-    expect(reopened.sqlite.query("SELECT count(*) AS count FROM soi_migrations").get()).toEqual({ count: 1 });
+    expect(reopened.sqlite.query("SELECT count(*) AS count FROM soi_migrations").get()).toEqual({ count: 2 });
   } finally {
     await reopenedWallet.dispose();
     reopened.close();

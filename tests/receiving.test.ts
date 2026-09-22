@@ -3,12 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteRepositories } from "@cashu/coco-sqlite-bun";
-import { Amount } from "@cashu/coco-core";
 import { LightningAddress } from "@getalby/lightning-tools/lnurl";
 import { startReceivingServer } from "../src/server.ts";
-import { setupInstance, verifyInstance } from "../src/setup.ts";
+import { verifyInstance } from "../src/setup.ts";
 import { openDatabase } from "../src/storage/database.ts";
-import { ConfigStore } from "../src/storage/config-store.ts";
+import { InstanceStore } from "../src/storage/instance-store.ts";
 import { SETUP } from "./fixtures.ts";
 import { startMintFixture } from "./mint-fixture.ts";
 
@@ -20,7 +19,6 @@ beforeEach(async () => {
   directory = mkdtempSync(join(tmpdir(), "soi-receiving-"));
   database = join(directory, "wallet.sqlite");
   mint = startMintFixture();
-  await setupInstance(database, { ...SETUP, mintUrl: mint.url });
 });
 afterEach(async () => {
   await service?.stop();
@@ -29,8 +27,10 @@ afterEach(async () => {
   rmSync(directory, { recursive: true, force: true });
 });
 
+function config() { return { ...SETUP, mintUrl: mint.url }; }
+async function verify() { return verifyInstance(database, config()); }
 async function start() {
-  service = await startReceivingServer({ database, port: 0, retryDelayMs: 40,
+  service = await startReceivingServer({ database, config: config(), port: 0, retryDelayMs: 40,
     timing: { pollingIntervalMs: 200, processorIntervalMs: 20 } });
   return service;
 }
@@ -51,7 +51,7 @@ async function inspect() {
     const repo = new SqliteRepositories({ database: connection.sqlite });
     await repo.init();
     return {
-      seedDigest: new Bun.CryptoHasher("sha256").update(new ConfigStore(connection.db).getSeed()).digest("hex"),
+      seedDigest: new Bun.CryptoHasher("sha256").update(new InstanceStore(connection.db).getSeed()).digest("hex"),
       proofs: await repo.proofRepository.getReadyProofs(mint.url),
       quotes: await repo.mintQuoteRepository.getPendingMintQuotes(),
       operations: await repo.mintOperationRepository.getPending(),
@@ -100,7 +100,7 @@ test("persists issuance before returning a fresh invoice for each callback; unpa
   expect(stored.quotes).toHaveLength(2);
   expect(stored.operations).toHaveLength(2);
   expect(stored.operations.every((op) => op.state === "pending" && op.outputData)).toBe(true);
-  expect((await verifyInstance(database)).accumulatedBalanceSats).toBe("0");
+  expect((await verify()).accumulatedBalanceSats).toBe("0");
 });
 
 test("a paid invoice becomes valid spendable ecash once and survives reopening with the same seed", async () => {
@@ -109,16 +109,16 @@ test("a paid invoice becomes valid spendable ecash once and survives reopening w
   const response = await request("/lnurlp/alice/callback?amount=21000");
   expect(response.status).toBe(200);
   const invoice = ((await response.json()) as { pr: string }).pr;
-  expect((await verifyInstance(database)).accumulatedBalanceSats).toBe("0");
+  expect((await verify()).accumulatedBalanceSats).toBe("0");
   mint.pay(invoice);
-  await eventually(async () => (await verifyInstance(database)).accumulatedBalanceSats === "21", "claim 21 sats");
+  await eventually(async () => (await verify()).accumulatedBalanceSats === "21", "claim 21 sats");
   mint.pay(invoice);
   const stored = await inspect();
   expect(stored.proofs.length).toBeGreaterThan(0);
   expect(stored.proofs.every((proof) => mint.verifies(proof))).toBe(true);
   await service!.stop();
   await start();
-  expect((await verifyInstance(database)).accumulatedBalanceSats).toBe("21");
+  expect((await verify()).accumulatedBalanceSats).toBe("21");
   expect((await inspect()).seedDigest).toBe(before.seedDigest);
   expect(mint.state.issuanceCount).toBe(1);
 }, 20_000);
@@ -129,13 +129,13 @@ test("claims an invoice paid while stopped exactly once after cold start", async
   await service!.stop();
   mint.pay(invoice);
   // Local inspection must not start recovery or claim the paid invoice.
-  expect((await verifyInstance(database)).accumulatedBalanceSats).toBe("0");
+  expect((await verify()).accumulatedBalanceSats).toBe("0");
   expect(mint.state.issuanceCount).toBe(0);
   await start();
-  await eventually(async () => (await verifyInstance(database)).accumulatedBalanceSats === "32", "cold-start claim");
+  await eventually(async () => (await verify()).accumulatedBalanceSats === "32", "cold-start claim");
   await service!.stop();
   await start();
-  expect((await verifyInstance(database)).accumulatedBalanceSats).toBe("32");
+  expect((await verify()).accumulatedBalanceSats).toBe("32");
   expect(mint.state.issuanceCount).toBe(1);
 }, 20_000);
 
@@ -150,45 +150,6 @@ test("automatically retries temporary mint failure while refusing payment reques
   expect((await request("/.well-known/lnurlp/alice")).status).toBe(200);
   expect(mint.state.infoRequests).toBeGreaterThan(1);
 });
-
-test("rejects a different configured mint before recovering paid invoices", async () => {
-  await start();
-  const invoice = ((await (await request("/lnurlp/alice/callback?amount=32000")).json()) as { pr: string }).pr;
-  await service!.stop(); service = undefined;
-  mint.pay(invoice);
-  const otherMint = startMintFixture();
-  const connection = openDatabase(database, false);
-  try {
-    connection.sqlite.query("UPDATE soi_settings SET value = ? WHERE key = 'mintUrl'").run(JSON.stringify(otherMint.url));
-    await expect(start()).rejects.toThrow("different mint");
-    expect(mint.state.issuanceAttempts).toBe(0);
-    expect((await inspect()).operations).toHaveLength(1);
-  } finally {
-    connection.close();
-    await otherMint.stop();
-  }
-});
-
-for (const reserved of [false, true]) {
-  test(`rejects ${reserved ? "reserved" : "spendable"} proofs from an unregistered foreign mint before startup`, async () => {
-    const connection = openDatabase(database, false);
-    try {
-      const repo = new SqliteRepositories({ database: connection.sqlite });
-      await repo.init();
-      const foreignMint = "https://other.example";
-      await repo.proofRepository.saveProofs(foreignMint, [{
-        id: "0011223344556677", mintUrl: foreignMint, unit: "usd", amount: Amount.from(1),
-        secret: "public-test-proof", C: "02" + "11".repeat(32), state: "ready",
-        ...(reserved ? { usedByOperationId: "pending-test-operation" } : {}),
-      }]);
-      expect(await repo.mintRepository.getAllMints()).toHaveLength(0);
-      await expect(start()).rejects.toThrow("different mint");
-      await expect(verifyInstance(database)).rejects.toThrow("different mint");
-      expect(await repo.mintRepository.getAllMints()).toHaveLength(0);
-      expect(await repo.proofRepository.getReadyProofs(foreignMint)).toHaveLength(1);
-    } finally { connection.close(); }
-  });
-}
 
 test("rejects incompatible capabilities on a fresh startup even with cached mint information", async () => {
   await start();
@@ -229,11 +190,11 @@ test("payment at the mint alone does not increase the local spendable balance", 
   mint.pay(invoice);
   await eventually(() => mint.state.issuanceAttempts > 0, "observe paid quote");
   expect([...mint.quotes.values()][0]?.state).toBe("PAID");
-  expect((await verifyInstance(database)).accumulatedBalanceSats).toBe("0");
+  expect((await verify()).accumulatedBalanceSats).toBe("0");
   await service!.stop();
   mint.state.issuancePaused = false;
   await start();
-  await eventually(async () => (await verifyInstance(database)).accumulatedBalanceSats === "21", "claim after restart");
+  await eventually(async () => (await verify()).accumulatedBalanceSats === "21", "claim after restart");
   expect(mint.state.issuanceCount).toBe(1);
 }, 20_000);
 
@@ -265,7 +226,7 @@ test("stopping during connectivity retries cancels further validation", async ()
 test("serve CLI receives a payment and shuts down on SIGTERM before the database is reopened", async () => {
   const entry = new URL("../index.ts", import.meta.url).pathname;
   const child = Bun.spawn([Bun.which("bun")!, entry, "--database", database, "serve", "--port", "0"], {
-    cwd: directory, stdout: "pipe", stderr: "pipe",
+    cwd: directory, env: { ...process.env, SOI_USERNAME: SETUP.username, SOI_XPUB: SETUP.destinationKey, SOI_MINT_URL: mint.url, SOI_PAYOUT_THRESHOLD_SATS: String(SETUP.payoutThresholdSats) }, stdout: "pipe", stderr: "pipe",
   });
   const [logStream, watchStream] = child.stdout.tee();
   const output = new Response(logStream).text();
@@ -285,13 +246,13 @@ test("serve CLI receives a payment and shuts down on SIGTERM before the database
     expect(response.status).toBe(200);
     mint.pay(((await response.json()) as { pr: string }).pr);
     // Production Coco transport uses a 20-second backup polling interval.
-    await eventually(async () => (await verifyInstance(database)).accumulatedBalanceSats === "21", "CLI claims payment", 30_000);
+    await eventually(async () => (await verify()).accumulatedBalanceSats === "21", "CLI claims payment", 30_000);
     child.kill("SIGTERM");
     expect(await child.exited).toBe(0);
     expect(await errors).toBe("");
     expect(await output).toContain("Receiving stopped.");
     await start();
-    expect((await verifyInstance(database)).accumulatedBalanceSats).toBe("21");
+    expect((await verify()).accumulatedBalanceSats).toBe("21");
     expect(mint.state.issuanceCount).toBe(1);
   } finally {
     if (child.exitCode === null) child.kill("SIGKILL");
@@ -318,7 +279,7 @@ test("Alby Lightning Tools 9.0.1 resolves discovery metadata and accepts the min
     expect(invoice.description).toBe("Cashu mint quote");
     expect(payer.lnurlpData?.description).toBe("Payment to alice@pay.example");
     mint.pay(invoice.paymentRequest);
-    await eventually(async () => (await verifyInstance(database)).accumulatedBalanceSats === "21", "payer fixture settlement");
+    await eventually(async () => (await verify()).accumulatedBalanceSats === "21", "payer fixture settlement");
     expect(mint.state.issuanceCount).toBe(1);
   } finally { proxy.mockRestore(); }
 }, 20_000);

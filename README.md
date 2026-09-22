@@ -4,45 +4,41 @@ A self-hosted, MIT-licensed Lightning Address service that accumulates payments 
 
 Local setup, verification, Lightning Address receiving and automatic on-chain payouts are implemented. Fly.io deployment and warm-resume handling remain subsequent slices. See the [v1 design](https://github.com/Egge21M/sats-on-ice/issues/1), [receiving evidence](docs/design/lightning-receiving.md) and [payout evidence](docs/design/threshold-payouts.md).
 
-## Set up an instance
+## Configure and start an instance
 
-Use Bun 1.3.14 (the tested version) and install the pinned dependencies:
-
-```sh
-bun install --frozen-lockfile
-```
-
-Export a **Bitcoin mainnet native SegWit account xpub or zpub** from a fresh account dedicated to this instance, typically `m/84'/0'/0'`. Supply the account key, not the master key or receiving-branch key. Private keys, testnet keys, descriptors and other address types are unsupported.
+Use Bun 1.3.14 (the tested version) and install pinned dependencies with `bun install --frozen-lockfile`. Configure the environment using [.env.example](.env.example) as a reference:
 
 ```sh
-bun run cli --database ./data/sats-on-ice.sqlite setup \
-  --username alice \
-  --mint https://your-mint.example \
-  --xpub YOUR_ACCOUNT_XPUB_OR_ZPUB \
-  --threshold 100000
+export SOI_MINT_URL=https://your-mint.example
+export SOI_PAYOUT_THRESHOLD_SATS=100000
+export SOI_USERNAME=alice
+export SOI_XPUB=YOUR_ACCOUNT_XPUB_OR_ZPUB
+export SOI_DATABASE=./data/sats-on-ice.sqlite
+bun run cli serve
 ```
 
-Setup displays the first receiving address at `/0/0`, the next payout index (initially zero) and the local accumulated balance (initially zero). **Compare the first address with your wallet before receiving payments.** An xpub does not encode its full origin path or intended address type. No address-history or reuse checks are performed, and previewing the address does not consume an index.
+The server initializes a fresh database and Cashu seed automatically; no prior `setup` command is required. Mint URL and threshold are required environment values on every invocation and are not stored as application settings. On a fresh database, username and xpub are also required. On later starts, omit either to reuse that value from the last active identity. Valid changed values select or create the corresponding identity without deleting old records or replacing the Cashu seed.
 
-The CLI generates one Cashu seed and persists it together with the configuration, identity and Coco repositories. Repeating setup with equivalent inputs reopens that state. Conflicting inputs are rejected; setup never replaces the seed, destination key, mint or index. Equivalent xpub/zpub encodings are stored as the same canonical xpub.
-
-Mint URLs are normalized before storage and comparison, including removal of all trailing slashes. For example, `https://MINT.example:443/cashu///` and `https://mint.example/cashu` identify the same configured mint on repeated setup.
-
-To reopen the stored setup without supplying those inputs again:
+Supply a **Bitcoin mainnet native SegWit account xpub or zpub** from a fresh account dedicated to this instance, typically `m/84'/0'/0'`. Private keys, testnet keys, descriptors and other address types are unsupported. For an offline address preview before starting to receive payments:
 
 ```sh
-bun run cli --database ./data/sats-on-ice.sqlite verify
-bun run cli --help
-bun run cli setup --help
+bun run cli setup    # Optional: initialize/select the env-configured identity and print a preview
+bun run cli verify   # Inspect an existing identity and the selected mint's local balance
 ```
 
-The default database path is `./data/sats-on-ice.sqlite`, relative to your working directory. Pass the same explicit path on each invocation. `verify` refuses to create a missing database. Both commands run locally and exit without mint requests, recovery, watchers or payment processors. Their output is a local configuration check, not a declaration that the mint is ready for payments.
+**Compare the first payout address with your wallet before receiving payments.** The `/0/0` preview consumes no index; xpubs do not establish the account's full origin path, and address history/reuse is not checked. Equivalent xpub/zpub encodings share one normalized destination and counter.
 
-Usernames accept 1–64 lowercase letters, digits, dots, underscores or hyphens, starting with a letter or digit. Thresholds must be positive safe-integer whole satoshis. Mint URLs must use HTTP(S), without credentials, query strings or fragments. Use HTTPS for a remote mint. This slice does not provide settings updates; the planned configuration commands will allow username and threshold changes while keeping mint and destination key fixed.
+Changing the username preserves the counter for the same destination. Changing the xpub selects a separate counter. Switching back resumes the previous destination's counter and reuses its identity. Only one identity's username is served at a time. `verify` does not create or activate identities, contact a mint, or run recovery; its balance is locally recorded spendable sats at `SOI_MINT_URL`.
+
+Changing `SOI_MINT_URL` selects the mint for new invoices and payout attempts. Remaining ecash at earlier mints stays in Coco, without automatic migration or new sweeps at those mints; Coco may recover existing operations. An already-submitted payout retains its recorded destination. A threshold change takes effect on restart.
+
+`SOI_DATABASE` defaults to `./data/sats-on-ice.sqlite`, `SOI_HOSTNAME` to `127.0.0.1`, and `SOI_PORT` to `3000`. CLI flags `--database`, `--hostname` and `--port` override those process settings. Username/xpub/mint/threshold are configured through the environment, not setup flags. Usernames accept 1–64 lowercase letters, digits, dots, underscores or hyphens and begin with a letter; thresholds must be positive whole sats within JavaScript's safe-integer range. Use HTTPS for remote mints.
+
+**Existing databases:** the migration preserves the seed, Coco state, identity and next payout index while splitting destinations into their own table. It removes the old settings table. Supply `SOI_MINT_URL` and `SOI_PAYOUT_THRESHOLD_SATS` before upgrading; the old database values are no longer runtime defaults. Username and xpub can be omitted to retain the migrated active identity.
 
 ## Receive Lightning Address payments
 
-After setup, start the server against the same database:
+With the environment configured, start the server against the persistent database:
 
 ```sh
 bun run cli --database ./data/sats-on-ice.sqlite serve --hostname 127.0.0.1 --port 3000
@@ -80,11 +76,11 @@ This runs a local HTTP mint fixture with real Cashu blind signatures, signed BOL
 
 ## Automatic payouts
 
-At startup and after an ecash claim or payout settlement, the server evaluates the stored threshold against spendable sats, excluding reserved proofs. At or above the threshold it allocates the next `/0/index` address, commits the incremented index, and requests an on-chain sweep quote. Failed attempts can leave unused addresses; an allocated index is never rolled back.
+At startup and after an ecash claim or payout settlement, the server evaluates the environment-configured threshold against spendable sats, excluding reserved proofs. At or above the threshold it allocates the next `/0/index` address, commits the incremented index, and requests an on-chain sweep quote. Failed attempts can leave unused addresses; an allocated index is never rolled back.
 
 The sweep uses the available balance, deducts input fees and the lowest advertised fee reserve, and includes any required pre-swap costs. Fee options are selected by their advertised identifier. There is no separate application fee cap. Returned change and proof-selection remainders stay in the accumulated balance. Unsupported, out-of-range or unaffordable quotes are reported without a fallback payment route.
 
-The `serve` output includes the payout address, allocated index, recipient amount, selected reserve, Coco operation ID and subsequent pending/finalized state. A mint-reported outpoint does not establish Bitcoin confirmation. Coco owns preparation, reserved proofs, execution and settlement. New receipts may trigger a separate payout while another remains pending; initiation is serialized within the one server process. `verify` remains offline and reports spendable balance and next index; richer management is issue #5.
+The `serve` output includes the payout address, allocated index, recipient amount, selected reserve, Coco operation ID and subsequent pending/finalized state. A mint-reported outpoint does not establish Bitcoin confirmation. Coco owns preparation, reserved proofs, execution and settlement. New receipts may trigger a separate payout while another remains pending; initiation is serialized within the one server process. `verify` remains offline and reports spendable balance and next index; richer management remains future work.
 
 A failed attempt is not retried continuously against the same proofs. A new receipt, settlement or restart can reevaluate the balance; the application never replays a possibly submitted withdrawal. Coco recovery can leave prepared operations reserved for an owner decision, and may retain unresolved operations after connectivity failures. This slice adds no recovery CLI. Keep the complete database and inspect persisted operations before taking recovery action.
 
@@ -98,14 +94,14 @@ It uses real Coco operations and Cashu proof verification, with simulated Bitcoi
 
 ## Persistence
 
-One SQLite file holds the complete instance:
+One SQLite file holds the durable instance state; retain the runtime environment separately:
 
 | Owner | Tables | Migration history |
 | --- | --- | --- |
-| Application / Drizzle | `soi_settings`, `soi_identity`, `soi_wallet_secret` | `soi_migrations` |
+| Application / Drizzle | `soi_destination`, `soi_identity`, `soi_active_identity`, `soi_wallet_secret` | `soi_migrations` |
 | Coco | `coco_cashu_*` wallet tables | `coco_cashu_migrations` |
 
-Application settings use JSON values in a key-value table and are decoded and validated with Zod. The identity is a singleton with a constrained integer next payout index. Seed storage is separate from displayable settings. Initial seed, identity and settings writes share one SQLite transaction; Coco migrations run afterward and can be retried with the persisted seed intact. Sharing the file does not make Coco's asynchronous operations atomic with application changes.
+Each identity references a destination, and each normalized xpub owns one next payout index shared across its identities. A singleton active reference supplies fallback identity values. Seed storage is separate. Initial seed creation and identity selection share an immediate transaction; Coco migrations run afterward and can be retried with the persisted seed intact. Application and Coco migration histories remain separate.
 
 The database contains the **unencrypted Cashu seed and spendable ecash**. New data directories use mode `0700`; the database and any existing WAL/SHM files are tightened to `0600` before opening. Keep it on persistent storage and run one owner instance per database. SQLite uses WAL, so an ordinary copy of an open `.sqlite` file alone is not a complete backup. A consistent backup command is planned in [ticket #6](https://github.com/Egge21M/sats-on-ice/issues/6).
 
@@ -124,6 +120,6 @@ After changing application tables in `src/storage/schema.ts`, run `bun run db:ge
 
 Tests use temporary real SQLite files and public BIP84 fixtures. They exercise setup/reopen, seed stability, rollback, input and stored-value validation, schema constraints, migration coexistence, reserved-balance exclusion, Coco seed derivation and CLI output. Receiving tests additionally bind loopback HTTP servers for their controlled mint and exercise payment processing without external mint access or real funds.
 
-Local `setup` and `verify` initialize and read Coco’s repositories directly, without creating a manager or starting payment recovery. Their balance includes only unreserved ready proofs in sats. `serve` validates persisted mint records and ready proofs through Coco’s repositories, then creates one manager with `initializeCoco()` and its default watchers, processors and startup recovery. It registers/trusts the configured mint through that manager before accepting payments. Application payout reactions use `Manager.on`. Returned managers are disposed before the caller-owned SQLite connection is closed; see the [receiving lifecycle](docs/design/lightning-receiving.md#implementation) for the factory failure-cleanup limitation.
+Local `setup` and `verify` read Coco repositories without creating a manager. `serve` creates one manager with `initializeCoco()` and its default watchers, processors and recovery; application payout reactions use `Manager.on`. Returned managers are disposed before SQLite closes; see the [receiving lifecycle](docs/design/lightning-receiving.md#implementation) for the factory failure-cleanup limitation.
 
 The [local setup design](docs/design/local-setup.md) records the selected dependency versions, validation and persistence boundaries, wallet lifecycle and verification limits. Domain terminology lives in [CONTEXT.md](CONTEXT.md), with design decisions in [docs/adr](docs/adr/). The project is available under the [MIT license](LICENSE).
