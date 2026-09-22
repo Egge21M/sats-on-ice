@@ -7,6 +7,7 @@ import { derivePayoutAddress } from "../src/destination.ts";
 import { SqliteRepositories } from "@cashu/coco-sqlite-bun";
 import { startReceivingServer } from "../src/server.ts";
 import { verifyInstance } from "../src/setup.ts";
+import { inspectStatus } from "../src/status.ts";
 import { openDatabase } from "../src/storage/database.ts";
 import { FIRST_ADDRESS, SECOND_ADDRESS, SETUP } from "./fixtures.ts";
 import { startMintFixture } from "./mint-fixture.ts";
@@ -105,6 +106,10 @@ test("new receipts can pay a second address while the first payout is pending; r
   await receive(1000);
   await eventually(async () => (await operations())[0]?.state === "pending");
   expect((await verify()).accumulatedBalanceSats).toBe("0");
+  const pendingStatus = await inspectStatus(database, config());
+  expect(pendingStatus.mints.find((m) => m.selected)).toMatchObject({ spendableSats: "0", reservedForPayoutsSats: "1000" });
+  expect(pendingStatus.mints.find((m) => m.selected)?.payouts[0]).toMatchObject({ state: "pending", destination: FIRST_ADDRESS, bitcoinState: "unavailable" });
+  expect(pendingStatus.live?.config.username).toBe("alice");
   await Promise.all([receive(600), receive(400)]);
   await eventually(async () => (await operations()).filter((op) => op?.state === "pending").length === 2);
   expect(mint.submissions.map(({ quote }) => quote.request)).toEqual([FIRST_ADDRESS, SECOND_ADDRESS]);
@@ -114,6 +119,9 @@ test("new receipts can pay a second address while the first payout is pending; r
   mint.submissions.forEach(({ quote }) => mint.settle(quote.quote));
   await eventually(async () => (await operations()).every((op) => op?.state === "finalized"));
   expect((await verify()).accumulatedBalanceSats).toBe("6");
+  const settled = await inspectStatus(database, config());
+  expect(settled.mints.find((m) => m.selected)?.reservedForPayoutsSats).toBe("0");
+  expect(settled.mints.find((m) => m.selected)?.payouts.every((p) => p.bitcoinState === "broadcast; confirmation unavailable")).toBe(true);
 }, 40000);
 
 test("underfunded pre-swaps are cancelled and requoted before any submission", async () => {
@@ -140,6 +148,7 @@ for (const scenario of ["unaffordable", "out-of-range", "quote failure"] as cons
     expect(mint.state.meltRequests).toBe(0);
     expect((await verify()).accumulatedBalanceSats).toBe("1000");
     expect((await verify()).config.nextPayoutIndex).toBe(1);
+    expect((await inspectStatus(database, config())).live?.lastPayout?.message).toMatch(/cannot cover|maximum payout|could not complete/);
   }, 40000);
 }
 
@@ -203,11 +212,16 @@ test("switching mint and identity preserves old funds and recovers submitted pay
   await receive(400);
   await eventually(async () => (await verify()).accumulatedBalanceSats === "400");
   const original = (await verify()).config;
-  await service!.stop(); service = undefined;
-  mint.settle(mint.submissions[0]!.quote.quote);
   const other = startMintFixture();
   const key = HDKey.fromMasterSeed(new Uint8Array(32).fill(3)).derive("m/84'/0'/0'").publicExtendedKey;
   const changed = { ...config(), username: "bob", destinationKey: key, mintUrl: other.url, payoutThresholdSats: 100 };
+  const beforeRestart = await inspectStatus(database, changed);
+  expect(beforeRestart.lastActiveIdentity.identityId).toBe(original.identityId);
+  expect(beforeRestart.nextStart).toMatchObject({ username: "bob", identityId: null, nextPayoutIndex: 0 });
+  expect(beforeRestart.live?.config).toMatchObject({ username: "alice", mintUrl: mint.url, payoutThresholdSats: 1000 });
+  expect(beforeRestart.mints.find((m) => m.mintUrl === mint.url)).toMatchObject({ spendableSats: "400", reservedForPayoutsSats: "1000" });
+  await service!.stop(); service = undefined;
+  mint.settle(mint.submissions[0]!.quote.quote);
   try {
     service = await startReceivingServer({ database, config: changed, port: 0,
       timing: { pollingIntervalMs: 500, processorIntervalMs: 20 }, onPayout: (message) => messages.push(message) });
@@ -220,6 +234,11 @@ test("switching mint and identity preserves old funds and recovers submitted pay
     expect(current.accumulatedBalanceSats).toBe("0");
     expect(current.config.destinationId).not.toBe(original.destinationId);
     expect(current.config.nextPayoutIndex).toBe(0);
+    const afterRestart = await inspectStatus(database, changed);
+    expect(afterRestart.live?.config).toMatchObject({ username: "bob", mintUrl: other.url, payoutThresholdSats: 100 });
+    expect(afterRestart.lastActiveIdentity.identityId).toBe(current.config.identityId);
+    expect(afterRestart.mints.find((m) => m.mintUrl === mint.url)).toMatchObject({ spendableSats: "403", reservedForPayoutsSats: "0" });
+    expect(afterRestart.mints.find((m) => m.mintUrl === mint.url)?.payouts[0]?.destination).toBe(FIRST_ADDRESS);
     expect(other.state.meltRequests).toBe(0);
     const base = `http://127.0.0.1:${service.port}`;
     expect((await fetch(`${base}/.well-known/lnurlp/alice`)).status).toBe(404);
@@ -234,6 +253,13 @@ test("switching mint and identity preserves old funds and recovers submitted pay
     expect((await verifyInstance(database, config())).accumulatedBalanceSats).toBe("403");
     expect((await verifyInstance(database, config())).config.nextPayoutIndex).toBe(1);
     expect((await verifyInstance(database, changed)).config.nextPayoutIndex).toBe(1);
+    await service.stop(); service = undefined;
+    await start();
+    const resumed = await inspectStatus(database, config());
+    expect(resumed.lastActiveIdentity.identityId).toBe(original.identityId);
+    expect(resumed.nextStart.nextPayoutIndex).toBe(1);
+    expect(resumed.live?.config.destinationId).toBe(original.destinationId);
+    expect(mint.state.meltRequests).toBe(1);
   } finally {
     await service?.stop(); service = undefined;
     await other.stop();

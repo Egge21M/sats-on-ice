@@ -6,6 +6,7 @@ import { SqliteRepositories } from "@cashu/coco-sqlite-bun";
 import { LightningAddress } from "@getalby/lightning-tools/lnurl";
 import { startReceivingServer } from "../src/server.ts";
 import { verifyInstance } from "../src/setup.ts";
+import { formatStatus, inspectStatus } from "../src/status.ts";
 import { openDatabase } from "../src/storage/database.ts";
 import { InstanceStore } from "../src/storage/instance-store.ts";
 import { SETUP } from "./fixtures.ts";
@@ -143,10 +144,16 @@ test("automatically retries temporary mint failure while refusing payment reques
   mint.state.unavailable = true;
   await start();
   expect(service!.status).toBe("retrying");
+  const retrying = await inspectStatus(database, config());
+  expect(retrying.live?.readiness).toBe("retrying");
+  expect(retrying.live?.message).toContain("Retrying mint validation");
+  expect(retrying.walletAvailable).toBe(false);
+  expect(formatStatus(retrying)).toContain("Wallet balances and operations: unavailable");
   expect((await request("/.well-known/lnurlp/alice")).status).toBe(503);
   expect((await request("/lnurlp/alice/callback?amount=1000")).status).toBe(503);
   mint.state.unavailable = false;
   await eventually(() => service!.status === "ready", "retry validation");
+  expect((await inspectStatus(database, config())).live?.readiness).toBe("ready");
   expect((await request("/.well-known/lnurlp/alice")).status).toBe(200);
   expect(mint.state.infoRequests).toBeGreaterThan(1);
 });
@@ -165,6 +172,8 @@ test("withholds an invoice whose encoded amount differs from the requested amoun
   expect(response.status).toBe(502);
   expect(await response.json()).toEqual({ status: "ERROR", reason: "Unable to prepare a receiving invoice. Please try again later." });
   expect((await inspect()).operations).toHaveLength(0);
+  const status = await inspectStatus(database, config());
+  expect(status.live?.lastInvoiceError?.message).toContain("Unable to prepare");
 });
 
 test("accepts the advertised maximum exactly", async () => {
@@ -221,6 +230,7 @@ test("stopping during connectivity retries cancels further validation", async ()
   await Bun.sleep(120);
   expect(mint.state.infoRequests).toBe(attempts);
   expect(service!.status).toBe("stopped");
+  expect((await inspectStatus(database, config())).live).toBeNull();
 });
 
 test("serve CLI receives a payment and shuts down on SIGTERM before the database is reopened", async () => {
@@ -242,6 +252,18 @@ test("serve CLI receives a payment and shuts down on SIGTERM before the database
     void reader.cancel();
     const port = received.match(/Listening on 127\.0\.0\.1:(\d+)/)?.[1];
     expect(port).toBeDefined();
+    const inspection = Bun.spawn([Bun.which("bun")!, entry, "--database", database, "status"], {
+      cwd: directory, env: { ...process.env, SOI_USERNAME: "bob", SOI_XPUB: SETUP.destinationKey,
+        SOI_MINT_URL: "https://future.example", SOI_PAYOUT_THRESHOLD_SATS: "500" }, stdout: "pipe", stderr: "pipe",
+    });
+    const [statusOutput, statusErrors, statusExit] = await Promise.all([
+      new Response(inspection.stdout).text(), new Response(inspection.stderr).text(), inspection.exited,
+    ]);
+    expect(statusExit).toBe(0);
+    expect(statusErrors).toBe("");
+    expect(statusOutput).toContain('Environment selection for next start: "bob"');
+    expect(statusOutput).toContain('Captured configuration: "alice"');
+    expect(statusOutput).toContain("Readiness: ready");
     const response = await fetch(`http://127.0.0.1:${port}/lnurlp/alice/callback?amount=21000`, { headers: { Host: "pay.example" } });
     expect(response.status).toBe(200);
     mint.pay(((await response.json()) as { pr: string }).pr);

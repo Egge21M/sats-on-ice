@@ -39,3 +39,5 @@ data/
 *.sqlite-*
 *.db
 *.db-*
+*.sqlite.status/
+*.db.status/
