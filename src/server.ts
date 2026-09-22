@@ -69,6 +69,13 @@ export async function startReceivingServer(options: {
 
   async function handle(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    // Fly's check must survive identity changes and must not create invoices.
+    // This reports existing startup readiness, not a fresh reconciliation.
+    if (url.pathname === "/readyz") {
+      if (request.method !== "GET") return failure("Use GET for readiness checks.", 405);
+      const ready = status === "ready" && !!wallet && !!capabilities;
+      return json({ ready }, ready ? 200 : 503);
+    }
     if (url.pathname !== discoveryPath && url.pathname !== callbackPath) return failure("Unknown Lightning Address.", 404);
     if (request.method !== "GET") return failure("Use GET for Lightning Address requests.", 405);
     if (status !== "ready" || !wallet || !capabilities) return failure("Receiving is not ready. Please try again later.", 503);

@@ -60,7 +60,7 @@ async function inspect() {
   } finally { connection.close(); }
 }
 
-test("discovery uses the public Host and exposes only the configured LNURL endpoints", async () => {
+test("discovery uses the public Host and restricts payment routes to the configured identity", async () => {
   await start();
   expect(service!.status).toBe("ready");
   const response = await request("/.well-known/lnurlp/alice", { headers: { "X-Forwarded-Host": "wrong.example" } });
@@ -75,6 +75,18 @@ test("discovery uses the public Host and exposes only the configured LNURL endpo
   }
   expect((await request("/.well-known/lnurlp/alice", { method: "POST" })).status).toBe(405);
   expect((await request("/.well-known/lnurlp/alice", { headers: { Host: "user@evil.example" } })).status).toBe(400);
+  expect(mint.state.quoteRequests).toBe(0);
+});
+
+test("readiness is independent of identity and Host and performs no mint work", async () => {
+  await start();
+  const infoRequests = mint.state.infoRequests;
+  const response = await request("/readyz", { headers: { Host: "internal.fly" } });
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(await response.json()).toEqual({ ready: true });
+  expect((await request("/readyz", { method: "POST" })).status).toBe(405);
+  expect(mint.state.infoRequests).toBe(infoRequests);
   expect(mint.state.quoteRequests).toBe(0);
 });
 
@@ -151,10 +163,14 @@ test("automatically retries temporary mint failure while refusing payment reques
   expect(formatStatus(retrying)).toContain("Wallet balances and operations: unavailable");
   expect((await request("/.well-known/lnurlp/alice")).status).toBe(503);
   expect((await request("/lnurlp/alice/callback?amount=1000")).status).toBe(503);
+  const unready = await request("/readyz");
+  expect(unready.status).toBe(503);
+  expect(await unready.json()).toEqual({ ready: false });
   mint.state.unavailable = false;
   await eventually(() => service!.status === "ready", "retry validation");
   expect((await inspectStatus(database, config())).live?.readiness).toBe("ready");
   expect((await request("/.well-known/lnurlp/alice")).status).toBe(200);
+  expect((await request("/readyz")).status).toBe(200);
   expect(mint.state.infoRequests).toBeGreaterThan(1);
 });
 

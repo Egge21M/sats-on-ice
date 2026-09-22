@@ -1,0 +1,23 @@
+# Allow only build inputs: never send environment files or wallet state.
+**
+!Dockerfile
+!.dockerignore
+!package.json
+!bun.lock
+!index.ts
+!migrations.ts
+!LICENSE
+!src/
+!src/**
+!scripts/
+!scripts/copy-migrations.ts
+!drizzle/
+!drizzle/**
+# Also exclude state accidentally placed inside an allowed source directory.
+**/.env*
+**/*.sqlite
+**/*.sqlite-*
+**/*.db
+**/*.db-*
+**/*.sqlite.status/**
+**/*.db.status/**

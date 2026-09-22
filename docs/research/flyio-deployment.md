@@ -1,5 +1,7 @@
 # Fly.io deployment for Sats on Ice
 
+For current commands and verification evidence, see the [implemented Fly deployment guide](../design/fly-deployment.md) and [backup/restore guide](../design/wallet-backup.md). The research below records the earlier investigation and its evidence at that time.
+
 Researched and updated 2026-09-19 against current primary documentation. Selected: Fly.io, one Machine with one persistent volume, CLI-created consistent SQLite backups and manual restore, and Fly-controlled automatic suspension with request-driven wake. Background payment work may wait until the next wake; application-controlled suspension and a separate wake scheduler are outside v1. Exact Machine size, region, mount path, and backup destination/frequency remain implementation or operator choices. Implementation update: `serve` now initializes a fresh database from environment configuration; see the [current local setup design](../design/local-setup.md). No Fly account, credentials, deployment, or live infrastructure was accessed.
 
 ## Persistent storage and Machine count
