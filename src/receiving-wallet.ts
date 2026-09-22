@@ -3,6 +3,9 @@ import { SqliteRepositories } from "@cashu/coco-sqlite-bun";
 import type { Database } from "bun:sqlite";
 import { decode } from "light-bolt11-decoder";
 import { assertConfiguredMint } from "./wallet.ts";
+import { payoutFeePlugin, startPayouts } from "./payouts.ts";
+import type { StoredConfig } from "./config.ts";
+import type { AmountLimits } from "./mint-capabilities.ts";
 
 /** The server owns this active lifecycle; CLI inspection never enables it. */
 export async function openReceivingWallet(
@@ -10,6 +13,7 @@ export async function openReceivingWallet(
   seedGetter: () => Promise<Uint8Array>,
   mintUrl: string,
   timing: { pollingIntervalMs?: number; processorIntervalMs?: number } = {},
+  payout?: { config: StoredConfig; limits: AmountLimits; allocate: () => { address: string; index: number }; report: (message: string) => void },
 ) {
   const repo = new SqliteRepositories({ database: sqlite });
   await repo.init();
@@ -17,11 +21,16 @@ export async function openReceivingWallet(
     fastPollingIntervalMs: timing.pollingIntervalMs,
     slowPollingIntervalMs: timing.pollingIntervalMs,
   };
-  const wallet = new Manager(repo, seedGetter, undefined, undefined, undefined, undefined, undefined, subscriptions);
+  const fees = payoutFeePlugin();
+  const wallet = new Manager(repo, seedGetter, undefined, undefined, [fees.plugin], undefined, undefined, subscriptions);
+  let payouts: ReturnType<typeof startPayouts> | undefined;
   try {
     await wallet.initPlugins();
     await assertConfiguredMint(wallet, mintUrl);
     await wallet.mint.addMint(mintUrl, { trusted: true });
+    await wallet.ops.melt.recovery.run();
+    await wallet.enableMeltSettlementProcessor();
+    await wallet.enableMeltQuoteWatcher();
     await wallet.reconcileLegacyMintQuotes(mintUrl);
     await wallet.enableMintOperationProcessor({
       processIntervalMs: timing.processorIntervalMs,
@@ -29,6 +38,7 @@ export async function openReceivingWallet(
     });
     await wallet.enableMintOperationWatcher();
     await wallet.recoverPendingMintOperations();
+    if (payout) payouts = startPayouts({ wallet, repo, fees, ...payout });
     return {
       async createInvoice(amountSats: number) {
         const quote = await wallet.quotes.mint.create({ mintUrl, method: "bolt11", amount: amountSats, unit: "sat" });
@@ -47,9 +57,10 @@ export async function openReceivingWallet(
         const operation = await wallet.ops.mint.prepare({ quote, amount: amountSats });
         return operation.request;
       },
-      close: () => wallet.dispose(),
+      async close() { await payouts?.stop(); await wallet.dispose(); },
     };
   } catch (error) {
+    await payouts?.stop();
     await wallet.dispose();
     throw error;
   }

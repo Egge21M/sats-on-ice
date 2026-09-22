@@ -1,3 +1,4 @@
+import type { StoredConfig } from "./config.ts";
 import { UserError } from "./errors.ts";
 import { fetchMintCapabilities, type MintCapabilities } from "./mint-capabilities.ts";
 import { openReceivingWallet } from "./receiving-wallet.ts";
@@ -31,15 +32,17 @@ export async function startReceivingServer(options: {
   port?: number;
   retryDelayMs?: number;
   onStatus?: (status: ReceivingStatus, message: string) => void;
+  onPayout?: (message: string) => void;
   /** Internal timing overrides for controlled integration checks. */
   timing?: { pollingIntervalMs?: number; processorIntervalMs?: number };
 }) {
   const connection = openDatabase(options.database, false);
   const store = new ConfigStore(connection.db);
-  let config;
+  let config: StoredConfig;
   try {
-    config = connection.sqlite.transaction(() => store.load())();
-    if (!config) throw new UserError("This database has not been set up. Run setup first.");
+    const loaded = connection.sqlite.transaction(() => store.load())();
+    if (!loaded) throw new UserError("This database has not been set up. Run setup first.");
+    config = loaded;
   } catch (error) {
     connection.close();
     throw error;
@@ -120,11 +123,15 @@ export async function startReceivingServer(options: {
       report("validating", "Checking mint capabilities and starting receiving.");
       const checked = await fetchMintCapabilities(mintUrl, abort.signal);
       if (abort.signal.aborted) return;
-      const opened = await openReceivingWallet(connection.sqlite, async () => store.getSeed(), mintUrl, options.timing);
+      const opened = await openReceivingWallet(connection.sqlite, async () => store.getSeed(), mintUrl, options.timing, {
+        config, limits: checked.payout,
+        allocate: () => connection.sqlite.transaction(() => store.allocatePayout()).immediate(),
+        report: (message) => options.onPayout?.(message),
+      });
       if (abort.signal.aborted) { await opened.close(); return; }
       wallet = opened;
       capabilities = checked;
-      report("ready", `Receiving ready: ${checked.receiving.min}–${checked.receiving.max} sats per invoice. On-chain payout capability verified; automatic payouts are not implemented.`);
+      report("ready", `Receiving ready: ${checked.receiving.min}–${checked.receiving.max} sats per invoice. Automatic sweep threshold: ${config.payoutThresholdSats} sats.`);
     } catch (error) {
       if (abort.signal.aborted) return;
       if (error instanceof UserError) {

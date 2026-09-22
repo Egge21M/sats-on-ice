@@ -1,4 +1,4 @@
-import { createBlindSignature, createNewMintKeys, pointFromHex, serializeMintKeys, verifyUnblindedSignature } from "@cashu/cashu-ts";
+import { hashToCurve, createBlindSignature, createNewMintKeys, pointFromHex, serializeMintKeys, verifyUnblindedSignature } from "@cashu/cashu-ts";
 import { encode, sign, decode } from "bolt11";
 import type { CoreProof } from "@cashu/coco-core";
 
@@ -11,7 +11,16 @@ type Quote = { quote: string; request: string; amount: number; unit: "sat"; stat
 type Output = { amount: number; id: string; B_: string };
 type Signature = { amount: number; id: string; C_: string };
 
+type Input = { amount: number; id: string; C: string; secret: string };
+type MeltQuote = { quote: string; request: string; amount: number; unit: string; expiry: number;
+  state: "UNPAID" | "PENDING" | "PAID"; fee_options: { fee_index: number; fee_reserve: number; estimated_blocks: number }[];
+  selected_fee_index: number | null; outpoint: string | null; change?: Signature[] };
+
 export function startMintFixture() {
+  const melts = new Map<string, MeltQuote>();
+  const spent = new Set<string>();
+  const pending = new Set<string>();
+  const submissions: { quote: MeltQuote; inputs: Input[]; outputs: Output[] }[] = [];
   const quotes = new Map<string, Quote>();
   const signatures = new Map<string, Signature>();
   const info = {
@@ -26,9 +35,36 @@ export function startMintFixture() {
     },
   };
   const state = { unavailable: false, issuancePaused: false, invoiceAmountOffset: 0, invoiceAgeSeconds: 0,
-    omitInvoiceExpiry: false, issuanceCount: 0, issuanceAttempts: 0, quoteRequests: 0, infoRequests: 0 };
+    omitInvoiceExpiry: false, issuanceCount: 0, issuanceAttempts: 0, quoteRequests: 0, infoRequests: 0, meltRequests: 0, swapRequests: 0,
+    pendingPayouts: false, payoutUnavailable: false, feeReserve: 10, feeRefund: 3 };
   const keyset = { id: keys.keysetId, unit: "sat", active: true, input_fee_ppk: 0 };
   const error = (detail: string, code = 10000) => Response.json({ code, detail }, { status: 400 });
+  function signOutput(output: Output, amount = output.amount) {
+    const signature = createBlindSignature(pointFromHex(output.B_), keys.privKeys[String(amount)]!, keys.keysetId);
+    const value = { amount, id: keys.keysetId, C_: signature.C_.toHex(true) };
+    signatures.set(output.B_, value);
+    return value;
+  }
+  function validInputs(inputs: Input[]) {
+    return inputs.length > 0 && new Set(inputs.map((p) => p.secret)).size === inputs.length && inputs.every((p) =>
+      p.id === keys.keysetId && !spent.has(p.secret) && !pending.has(p.secret) && keys.privKeys[String(p.amount)] &&
+      verifyUnblindedSignature({ C: pointFromHex(p.C), secret: new TextEncoder().encode(p.secret), id: p.id }, keys.privKeys[String(p.amount)]!));
+  }
+  function inputFee(inputs: Input[]) { return Math.ceil(inputs.length * keyset.input_fee_ppk / 1000); }
+  function settle(quoteId: string) {
+    const submission = submissions.find((s) => s.quote.quote === quoteId)!;
+    const { quote, inputs, outputs } = submission;
+    if (quote.state === "PAID") return;
+    const reserve = quote.fee_options.find((f) => f.fee_index === quote.selected_fee_index)!.fee_reserve;
+    let change = inputs.reduce((sum, p) => sum + p.amount, 0) - quote.amount - inputFee(inputs) - reserve + Math.min(state.feeRefund, reserve);
+    const amounts: number[] = [];
+    for (let value = 1; change > 0; value *= 2) { if (change % 2) amounts.push(value); change = Math.floor(change / 2); }
+    if (amounts.length > outputs.length) throw new Error("Insufficient change outputs");
+    quote.change = amounts.map((amount, i) => signOutput(outputs[i]!, amount));
+    inputs.forEach((p) => { pending.delete(p.secret); spent.add(p.secret); });
+    quote.state = "PAID";
+    quote.outpoint = `${"ab".repeat(32)}:0`;
+  }
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -86,6 +122,44 @@ export function startMintFixture() {
         state.issuanceCount++;
         return Response.json({ signatures: signed });
       }
+      if (path === "/v1/melt/quote/onchain" && request.method === "POST") {
+        if (state.payoutUnavailable) return new Response("Unavailable", { status: 503 });
+        const body = await request.json() as { request: string; amount: number; unit: string };
+        const limits = info.nuts["5"].methods[0]!;
+        if (body.unit !== "sat" || body.amount < limits.min_amount || body.amount > limits.max_amount) return error("Invalid payout amount");
+        const quote: MeltQuote = { quote: crypto.randomUUID(), request: body.request, amount: body.amount,
+          unit: "sat", expiry: Math.floor(Date.now() / 1000) + 3600, state: "UNPAID", selected_fee_index: null, outpoint: null,
+          fee_options: [{ fee_index: 42, fee_reserve: state.feeReserve + 8, estimated_blocks: 1 },
+            { fee_index: 7, fee_reserve: state.feeReserve, estimated_blocks: 6 },
+            { fee_index: 19, fee_reserve: state.feeReserve + 2, estimated_blocks: 3 }] };
+        melts.set(quote.quote, quote);
+        return Response.json(quote);
+      }
+      if (path.startsWith("/v1/melt/quote/onchain/") && request.method === "GET") {
+        return Response.json(melts.get(path.split("/").at(-1)!)!);
+      }
+      if (path === "/v1/swap" && request.method === "POST") {
+        const { inputs, outputs } = await request.json() as { inputs: Input[]; outputs: Output[] };
+        if (!validInputs(inputs) || inputs.reduce((sum, p) => sum + p.amount, 0) !==
+            outputs.reduce((sum, p) => sum + p.amount, 0) + inputFee(inputs)) return error("Invalid swap inputs or fees");
+        inputs.forEach((p) => spent.add(p.secret));
+        state.swapRequests++;
+        return Response.json({ signatures: outputs.map((output) => signOutput(output)) });
+      }
+      if (path === "/v1/melt/onchain" && request.method === "POST") {
+        const body = await request.json() as { quote: string; fee_index: number; inputs: Input[]; outputs: Output[] };
+        const quote = melts.get(body.quote);
+        const fee = quote?.fee_options.find((f) => f.fee_index === body.fee_index);
+        if (!quote || quote.state !== "UNPAID" || !fee || !validInputs(body.inputs) ||
+            body.inputs.reduce((sum, p) => sum + p.amount, 0) < quote.amount + fee.fee_reserve + inputFee(body.inputs)) return error("Invalid melt inputs or fees");
+        state.meltRequests++;
+        quote.selected_fee_index = body.fee_index;
+        quote.state = "PENDING";
+        body.inputs.forEach((p) => pending.add(p.secret));
+        submissions.push({ quote, inputs: body.inputs, outputs: body.outputs ?? [] });
+        if (!state.pendingPayouts) settle(quote.quote);
+        return Response.json(quote);
+      }
       if (path === "/v1/restore" && request.method === "POST") {
         const { outputs } = await request.json() as { outputs: Output[] };
         const known = outputs.filter((output) => signatures.has(output.B_));
@@ -93,14 +167,15 @@ export function startMintFixture() {
       }
       if (path === "/v1/checkstate" && request.method === "POST") {
         const { Ys } = await request.json() as { Ys: string[] };
-        return Response.json({ states: Ys.map((Y) => ({ Y, state: "UNSPENT" })) });
+        return Response.json({ states: Ys.map((Y) => ({ Y, state: [...spent].some((s) => hashToCurve(new TextEncoder().encode(s)).toHex(true) === Y) ? "SPENT" :
+          [...pending].some((s) => hashToCurve(new TextEncoder().encode(s)).toHex(true) === Y) ? "PENDING" : "UNSPENT" })) });
       }
       return new Response("Not found", { status: 404 });
     },
   });
   return {
     url: `http://127.0.0.1:${server.port}`,
-    info, state, quotes,
+    info, state, quotes, melts, keyset, submissions, settle,
     pay(invoice: string) {
       // Exercise a real BOLT11 decoder (including signature recovery), then
       // simulate settlement at the fixture instead of routing a real payment.
