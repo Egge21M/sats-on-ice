@@ -2,7 +2,7 @@ import { initializeCoco, type CocoConfig } from "@cashu/coco-core";
 import { SqliteRepositories } from "@cashu/coco-sqlite-bun";
 import type { Database } from "bun:sqlite";
 import { decode } from "light-bolt11-decoder";
-import { assertConfiguredMint, openLocalWallet } from "./wallet.ts";
+import { assertConfiguredMint } from "./wallet.ts";
 import { payoutFeePlugin, startPayouts } from "./payouts.ts";
 import type { StoredConfig } from "./config.ts";
 import type { AmountLimits } from "./mint-capabilities.ts";
@@ -15,15 +15,10 @@ export async function openReceivingWallet(
   timing: { pollingIntervalMs?: number; processorIntervalMs?: number } = {},
   payout?: { config: StoredConfig; limits: AmountLimits; allocate: () => { address: string; index: number }; report: (message: string) => void },
 ) {
-  // Validate and register the mint before initializeCoco can recover payments.
-  const local = await openLocalWallet(sqlite, seedGetter);
-  try {
-    await assertConfiguredMint(local, mintUrl);
-    await local.mint.addMint(mintUrl, { trusted: true });
-  } finally {
-    await local.dispose();
-  }
   const repo = new SqliteRepositories({ database: sqlite });
+  await repo.init();
+  // Validate persisted wallet state before initializeCoco can recover payments.
+  await assertConfiguredMint(repo, mintUrl);
   const subscriptions: CocoConfig["subscriptions"] = timing.pollingIntervalMs === undefined ? undefined : {
     fastPollingIntervalMs: timing.pollingIntervalMs,
     slowPollingIntervalMs: timing.pollingIntervalMs,
@@ -40,6 +35,7 @@ export async function openReceivingWallet(
   });
   let payouts: ReturnType<typeof startPayouts> | undefined;
   try {
+    await wallet.mint.addMint(mintUrl, { trusted: true });
     if (payout) payouts = startPayouts({ wallet, repo, fees, ...payout });
     return {
       async createInvoice(amountSats: number) {

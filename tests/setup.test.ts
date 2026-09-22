@@ -162,7 +162,7 @@ test("both migration systems preserve application state, Coco counters, keyring 
   const repo = new SqliteRepositories({ database: connection.sqlite });
   await repo.init();
   const store = new ConfigStore(connection.db);
-  const wallet = await openLocalWallet(connection.sqlite, async () => store.getSeed());
+  const wallet = await openLocalWallet(repo, async () => store.getSeed());
   const publicKey = (await wallet.keyring.generateKeyPair()).publicKeyHex;
   // Coco's P2PK keyring serializes the Schnorr x-only key with an even-y prefix.
   const expectedPublicKey = "02" + Buffer.from(HDKey.fromMasterSeed(store.getSeed()).derive("m/129373'/10'/0'/0'/0").publicKey!.slice(1)).toString("hex");
@@ -189,7 +189,7 @@ test("both migration systems preserve application state, Coco counters, keyring 
   const reopened = openDatabase(path, false);
   const reopenedRepo = new SqliteRepositories({ database: reopened.sqlite });
   await reopenedRepo.init();
-  const reopenedWallet = await openLocalWallet(reopened.sqlite, async () => new ConfigStore(reopened.db).getSeed());
+  const reopenedWallet = await openLocalWallet(reopenedRepo, async () => new ConfigStore(reopened.db).getSeed());
   try {
     expect((await reopenedWallet.keyring.getKeyPair(publicKey))?.publicKeyHex).toBe(publicKey);
     expect((await reopenedRepo.counterRepository.getCounter(SETUP.mintUrl, "0011223344556677"))?.counter).toBe(42);

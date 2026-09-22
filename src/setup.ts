@@ -1,4 +1,5 @@
 import { setupSchema, type StoredConfig } from "./config.ts";
+import { SqliteRepositories } from "@cashu/coco-sqlite-bun";
 import { derivePayoutAddress } from "./destination.ts";
 import { UserError } from "./errors.ts";
 import { ConfigStore } from "./storage/config-store.ts";
@@ -15,9 +16,10 @@ export interface SetupSummary {
 async function inspect(connection: ReturnType<typeof openDatabase>, store: ConfigStore, created: boolean): Promise<SetupSummary> {
   const config = connection.sqlite.transaction(() => store.load())();
   if (!config) throw new UserError("This database has not been set up. Run setup first.");
-  const wallet = await openLocalWallet(connection.sqlite, async () => store.getSeed());
+  const repo = new SqliteRepositories({ database: connection.sqlite });
+  const wallet = await openLocalWallet(repo, async () => store.getSeed());
   try {
-    await assertConfiguredMint(wallet, config.mintUrl);
+    await assertConfiguredMint(repo, config.mintUrl);
     const balance = await wallet.wallet.balances.total({ mintUrls: [config.mintUrl], units: ["sat"] });
     return {
       created,

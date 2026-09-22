@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteRepositories } from "@cashu/coco-sqlite-bun";
+import { Amount } from "@cashu/coco-core";
 import { LightningAddress } from "@getalby/lightning-tools/lnurl";
 import { startReceivingServer } from "../src/server.ts";
 import { setupInstance, verifyInstance } from "../src/setup.ts";
@@ -167,6 +168,27 @@ test("rejects a different configured mint before recovering paid invoices", asyn
     await otherMint.stop();
   }
 });
+
+for (const reserved of [false, true]) {
+  test(`rejects ${reserved ? "reserved" : "spendable"} proofs from an unregistered foreign mint before startup`, async () => {
+    const connection = openDatabase(database, false);
+    try {
+      const repo = new SqliteRepositories({ database: connection.sqlite });
+      await repo.init();
+      const foreignMint = "https://other.example";
+      await repo.proofRepository.saveProofs(foreignMint, [{
+        id: "0011223344556677", mintUrl: foreignMint, unit: "usd", amount: Amount.from(1),
+        secret: "public-test-proof", C: "02" + "11".repeat(32), state: "ready",
+        ...(reserved ? { usedByOperationId: "pending-test-operation" } : {}),
+      }]);
+      expect(await repo.mintRepository.getAllMints()).toHaveLength(0);
+      await expect(start()).rejects.toThrow("different mint");
+      await expect(verifyInstance(database)).rejects.toThrow("different mint");
+      expect(await repo.mintRepository.getAllMints()).toHaveLength(0);
+      expect(await repo.proofRepository.getReadyProofs(foreignMint)).toHaveLength(1);
+    } finally { connection.close(); }
+  });
+}
 
 test("rejects incompatible capabilities on a fresh startup even with cached mint information", async () => {
   await start();
