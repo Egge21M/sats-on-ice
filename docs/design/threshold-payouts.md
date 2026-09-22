@@ -4,7 +4,7 @@ Implementation of [issue #4](https://github.com/Egge21M/sats-on-ice/issues/4). F
 
 ## Initiation and persistence
 
-The active server evaluates spendable sat proofs on startup, after a mint operation finalizes, and after payout settlement. Coco's available-proof repository excludes inflight and reserved proofs. Eligibility is measured before fees using `balance >= threshold`. A coalescing queue serializes allocation, quoting, preparation and submission. Coco tracks pending settlement independently, so fresh unreserved funds can fund the next payout.
+The active server evaluates spendable sat proofs after startup/resume reconciliation, after a mint operation finalizes, and after payout settlement. New initiation is gated while the server is unready. Coco's available-proof repository excludes inflight and reserved proofs. Eligibility is measured before fees using `balance >= threshold`. A coalescing queue serializes allocation, quoting, preparation and submission. Coco tracks pending settlement independently, so fresh unreserved funds can fund the next payout.
 
 An IMMEDIATE SQLite transaction derives `/0/index` and increments the destination's next payout index. It commits before mint communication; no failure path decrements it. Exhausted indices are refused. The transaction is separate from Coco's later operation transactions. A crash between allocation and preparation can leave a gap. No Bitcoin address history is queried.
 
@@ -24,7 +24,7 @@ Successful direct melts also have their actual selected-input fees checked befor
 
 Server startup runs Coco melt recovery and enables its melt quote watcher and settlement processor alongside receiving processing. Shutdown detaches payout triggers, waits for current initiation, then disposes Coco before closing SQLite. A prepared operation reached during shutdown is cancelled before submission. There is no busy veto on Fly suspension or wake scheduler.
 
-The server CLI prints allocated addresses, amounts, operation IDs, reserve and pre-swap fee, plus pending/finalized/rolled-back events. Raw library exceptions, proofs and seeds are not logged. Mint finalization/outpoints are reported without claiming Bitcoin confirmation. Offline `verify` does not enable this lifecycle. [Wallet status](wallet-status.md) adds read-only payout inspection and distinguishes environment policy from the running server's captured configuration; warm-resume reconciliation and interrupted-operation verification remain issue #8.
+The server CLI prints allocated addresses, amounts, operation IDs, reserve and pre-swap fee, plus pending/finalized/rolled-back events. Raw library exceptions, proofs and seeds are not logged. Mint finalization/outpoints are reported without claiming Bitcoin confirmation. Offline `verify` does not enable this lifecycle. [Wallet status](wallet-status.md) adds read-only payout inspection and distinguishes environment policy from the running server's captured configuration; the [resume guide](payment-resume.md) covers reconciliation and interrupted-operation checks.
 
 Coco startup recovery can retain prepared operations for owner decision and swallow some recovery failures. This implementation does not assert complete recovery or add a custom recovery engine. A possibly submitted operation is never executed again by the application; new initiation considers only proofs Coco reports available.
 

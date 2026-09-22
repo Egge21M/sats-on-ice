@@ -16,7 +16,10 @@ type MeltQuote = { quote: string; request: string; amount: number; unit: string;
   state: "UNPAID" | "PENDING" | "PAID"; fee_options: { fee_index: number; fee_reserve: number; estimated_blocks: number }[];
   selected_fee_index: number | null; outpoint: string | null; change?: Signature[] };
 
-export function startMintFixture() {
+export function startMintFixture(options: { websocket?: boolean } = {}) {
+  type Subscription = { kind: string; filters: string[] };
+  type SocketData = { subscriptions: Map<string, Subscription> };
+  const sockets = new Set<Bun.ServerWebSocket<SocketData>>();
   const melts = new Map<string, MeltQuote>();
   const spent = new Set<string>();
   const pending = new Set<string>();
@@ -32,11 +35,21 @@ export function startMintFixture() {
       "7": { supported: true },
       "8": { supported: true },
       "9": { supported: true },
+      ...options.websocket ? { "17": { supported: [{ method: "bolt11", unit: "sat", commands: ["bolt11_mint_quote"] }] } } : {},
     },
   };
-  const state = { unavailable: false, issuancePaused: false, invoiceAmountOffset: 0, invoiceAgeSeconds: 0,
-    omitInvoiceExpiry: false, issuanceCount: 0, issuanceAttempts: 0, quoteRequests: 0, infoRequests: 0, meltRequests: 0, swapRequests: 0,
-    pendingPayouts: false, payoutUnavailable: false, feeReserve: 10, feeRefund: 3 };
+  const state = { unavailable: false, quoteStatusUnavailable: false, issuancePaused: false, invoiceAmountOffset: 0, invoiceAgeSeconds: 0,
+    omitInvoiceExpiry: false, issuanceCount: 0, issuanceAttempts: 0, quoteRequests: 0, infoRequests: 0, meltRequests: 0, meltAttempts: 0, swapRequests: 0,
+    pendingPayouts: false, holdMeltResponses: false, payoutUnavailable: false, feeReserve: 10, feeRefund: 3,
+    wsConnections: 0, dropNotifications: false };
+  function notify(quote: Quote) {
+    if (state.dropNotifications) return;
+    for (const socket of sockets) for (const [subId, subscription] of socket.data.subscriptions) {
+      if (subscription.kind === "bolt11_mint_quote" && subscription.filters.includes(quote.quote)) {
+        socket.send(JSON.stringify({ jsonrpc: "2.0", method: "subscribe", params: { subId, payload: quote } }));
+      }
+    }
+  }
   const keyset = { id: keys.keysetId, unit: "sat", active: true, input_fee_ppk: 0 };
   const error = (detail: string, code = 10000) => Response.json({ code, detail }, { status: 400 });
   function signOutput(output: Output, amount = output.amount) {
@@ -65,13 +78,17 @@ export function startMintFixture() {
     quote.state = "PAID";
     quote.outpoint = `${"ab".repeat(32)}:0`;
   }
-  const server = Bun.serve({
+  const server = Bun.serve<SocketData>({
     hostname: "127.0.0.1",
     port: 0,
-    async fetch(request) {
+    async fetch(request, server) {
       const path = new URL(request.url).pathname;
+      if (path === "/v1/ws" && options.websocket && server.upgrade(request, { data: { subscriptions: new Map() } })) return;
       if (path === "/v1/info") state.infoRequests++;
       if (state.unavailable) return new Response("Unavailable", { status: 503 });
+      if (state.quoteStatusUnavailable && request.method === "GET" && /\/v1\/(mint|melt)\/quote\//.test(path)) {
+        return new Response("Quote checks unavailable", { status: 503 });
+      }
       if (path === "/v1/info") return Response.json(info);
       if (path === "/v1/keysets") return Response.json({ keysets: [keyset] });
       if (path === "/v1/keys" || path === `/v1/keys/${keys.keysetId}`) {
@@ -120,6 +137,7 @@ export function startMintFixture() {
         });
         quote.state = "ISSUED";
         state.issuanceCount++;
+        notify(quote);
         return Response.json({ signatures: signed });
       }
       if (path === "/v1/melt/quote/onchain" && request.method === "POST") {
@@ -147,6 +165,7 @@ export function startMintFixture() {
         return Response.json({ signatures: outputs.map((output) => signOutput(output)) });
       }
       if (path === "/v1/melt/onchain" && request.method === "POST") {
+        state.meltAttempts++;
         const body = await request.json() as { quote: string; fee_index: number; inputs: Input[]; outputs: Output[] };
         const quote = melts.get(body.quote);
         const fee = quote?.fee_options.find((f) => f.fee_index === body.fee_index);
@@ -158,6 +177,7 @@ export function startMintFixture() {
         body.inputs.forEach((p) => pending.add(p.secret));
         submissions.push({ quote, inputs: body.inputs, outputs: body.outputs ?? [] });
         if (!state.pendingPayouts) settle(quote.quote);
+        while (state.holdMeltResponses && !request.signal.aborted) await Bun.sleep(20);
         return Response.json(quote);
       }
       if (path === "/v1/restore" && request.method === "POST") {
@@ -172,6 +192,20 @@ export function startMintFixture() {
       }
       return new Response("Not found", { status: 404 });
     },
+    websocket: {
+      open(socket) { sockets.add(socket); state.wsConnections++; },
+      message(socket, raw) {
+        const message = JSON.parse(String(raw)) as { id: number; method: string; params: Subscription & { subId: string } };
+        const { subId, kind, filters } = message.params;
+        if (message.method === "unsubscribe") socket.data.subscriptions.delete(subId);
+        else if (message.method === "subscribe") socket.data.subscriptions.set(subId, { kind, filters });
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { status: "OK", subId } }));
+        if (message.method === "subscribe" && kind === "bolt11_mint_quote") {
+          for (const id of filters) { const quote = quotes.get(id); if (quote) notify(quote); }
+        }
+      },
+      close(socket) { sockets.delete(socket); },
+    },
   });
   return {
     url: `http://127.0.0.1:${server.port}`,
@@ -182,13 +216,23 @@ export function startMintFixture() {
       const decoded = decode(invoice);
       const quote = [...quotes.values()].find((quote) => quote.request === invoice);
       if (!quote || decoded.satoshis !== quote.amount) throw new Error("Unknown or mismatched invoice");
-      if (quote.state === "UNPAID") quote.state = "PAID";
+      if (quote.state === "UNPAID") { quote.state = "PAID"; notify(quote); }
     },
     verifies(proof: CoreProof) {
       return verifyUnblindedSignature({
         C: pointFromHex(proof.C), secret: new TextEncoder().encode(proof.secret), id: proof.id,
       }, keys.privKeys[proof.amount.toString()]!);
     },
-    stop: () => server.stop(true),
+    closeSockets() { for (const socket of sockets) socket.close(1001, "Mint connection closed"); },
+    async stop() {
+      for (const socket of sockets) socket.terminate();
+      const stopped = server.stop(true);
+      if (!options.websocket) return stopped;
+      // Bun 1.3.14 can retain a phantom pendingWebSockets count after a
+      // server-initiated close. The listener and real sockets are closed;
+      // do not let its unresolved stop promise hang the integration harness.
+      await Promise.race([stopped, Bun.sleep(1000)]);
+      if (server.pendingRequests || sockets.size) throw new Error("Mint fixture still has active requests or sockets");
+    },
   };
 }
