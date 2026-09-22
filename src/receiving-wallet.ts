@@ -29,29 +29,17 @@ export async function openReceivingWallet(
     slowPollingIntervalMs: timing.pollingIntervalMs,
   };
   const fees = payoutFeePlugin();
-  // Coco 2.0.0 does not dispose a failed factory initialization. Defer workers
-  // until it returns a manager we can dispose; the factory still runs recovery.
   const wallet = await initializeCoco({
     repo, seedGetter, plugins: [fees.plugin], subscriptions,
-    watchers: {
-      mintOperationWatcher: { disabled: true },
-      meltQuoteWatcher: { disabled: true },
-      proofStateWatcher: { disabled: true },
-    },
-    processors: {
-      mintOperationProcessor: { disabled: true },
-      meltSettlementProcessor: { disabled: true },
+    processors: timing.processorIntervalMs === undefined ? undefined : {
+      mintOperationProcessor: {
+        processIntervalMs: timing.processorIntervalMs,
+        initialEnqueueDelayMs: timing.processorIntervalMs,
+      },
     },
   });
   let payouts: ReturnType<typeof startPayouts> | undefined;
   try {
-    await wallet.enableMeltSettlementProcessor();
-    await wallet.enableMeltQuoteWatcher();
-    await wallet.enableMintOperationProcessor({
-      processIntervalMs: timing.processorIntervalMs,
-      initialEnqueueDelayMs: timing.processorIntervalMs,
-    });
-    await wallet.enableMintOperationWatcher();
     if (payout) payouts = startPayouts({ wallet, repo, fees, ...payout });
     return {
       async createInvoice(amountSats: number) {
