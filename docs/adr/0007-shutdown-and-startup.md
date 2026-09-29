@@ -1,0 +1,3 @@
+# Support continuous operation or full shutdown and startup
+
+The server may run continuously or stop completely and later start a new process against the same persistent database, with Coco recovering saved payments during startup. This replaces the earlier Fly suspension policy: memory-preserving suspension, hibernation and warm resume are unsupported, so the application has no pause detector or resume orchestration. Owners who stop the service accept that ecash claims and payout processing wait until it starts again; a supervisor or hosting platform owns that restart.

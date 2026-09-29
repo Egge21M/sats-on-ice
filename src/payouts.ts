@@ -119,7 +119,7 @@ export function startPayouts(options: {
     const operation = await prepare(address, balance, cashu.getFeesForProofs(proofs).toBigInt());
     if (!operation) return;
     if (stopped || !options.canInitiate()) {
-      await wallet.ops.melt.cancel(operation.id, "Server stopped or requires reconciliation before payout submission.");
+      await wallet.ops.melt.cancel(operation.id, "Server stopped before payout submission.");
       return;
     }
     report(`Payout ${operation.id}: ${operation.amount} sats to ${address}; fee option ${("feeIndex" in operation.methodData ? operation.methodData.feeIndex : "unknown")}, reserve ${operation.fee_reserve} sats, pre-swap fee ${operation.swap_fee} sats.`);

@@ -34,7 +34,7 @@ export async function openReceivingWallet(
     await wallet.mint.addMint(mintUrl, { trusted: true });
     if (payout) payouts = startPayouts({ wallet, repo, fees, ...payout });
     return {
-      async reconcile() {
+      async reconcileStartup() {
         // Factory recovery is best-effort. Public per-operation refresh surfaces
         // errors, and Coco alone owns redemption, proof recovery and settlement.
         // Quotes can survive a crash before an operation is prepared. Refresh

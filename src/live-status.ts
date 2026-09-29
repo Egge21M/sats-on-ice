@@ -53,7 +53,7 @@ export async function serveLiveStatus(database: string, snapshot: () => LiveStat
   return { close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
 }
 
-/** A timeout/missing socket says nothing about whether the server is stopped or suspended. */
+/** A timeout/missing socket does not establish whether the server is running. */
 export async function readLiveStatus(database: string): Promise<LiveStatus | null> {
   let path: string;
   try { path = socketPath(database); } catch { return null; }

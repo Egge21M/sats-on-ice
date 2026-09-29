@@ -12,7 +12,7 @@ FROM oven/bun:1.3.14-slim@sha256:d56a2534ffd262e92c12fd3249d3924d296d97086da773f
 WORKDIR /app
 COPY --from=build /app/dist ./dist
 COPY LICENSE ./LICENSE
-# Fly mounts a root-owned volume at /data. Wallet files are created as 0600;
+# The default container user can write mounted volumes at /data. Wallet files are 0600;
 # use the same OS user for the server and local status/backup commands.
 USER root
 ENV NODE_ENV=production \

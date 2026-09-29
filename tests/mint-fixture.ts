@@ -16,10 +16,7 @@ type MeltQuote = { quote: string; request: string; amount: number; unit: string;
   state: "UNPAID" | "PENDING" | "PAID"; fee_options: { fee_index: number; fee_reserve: number; estimated_blocks: number }[];
   selected_fee_index: number | null; outpoint: string | null; change?: Signature[] };
 
-export function startMintFixture(options: { websocket?: boolean } = {}) {
-  type Subscription = { kind: string; filters: string[] };
-  type SocketData = { subscriptions: Map<string, Subscription> };
-  const sockets = new Set<Bun.ServerWebSocket<SocketData>>();
+export function startMintFixture() {
   const melts = new Map<string, MeltQuote>();
   const spent = new Set<string>();
   const pending = new Set<string>();
@@ -35,21 +32,11 @@ export function startMintFixture(options: { websocket?: boolean } = {}) {
       "7": { supported: true },
       "8": { supported: true },
       "9": { supported: true },
-      ...options.websocket ? { "17": { supported: [{ method: "bolt11", unit: "sat", commands: ["bolt11_mint_quote"] }] } } : {},
     },
   };
   const state = { unavailable: false, quoteStatusUnavailable: false, issuancePaused: false, invoiceAmountOffset: 0, invoiceAgeSeconds: 0,
     omitInvoiceExpiry: false, issuanceCount: 0, issuanceAttempts: 0, quoteRequests: 0, infoRequests: 0, meltRequests: 0, meltAttempts: 0, swapRequests: 0,
-    pendingPayouts: false, holdMeltResponses: false, payoutUnavailable: false, feeReserve: 10, feeRefund: 3,
-    wsConnections: 0, dropNotifications: false };
-  function notify(quote: Quote) {
-    if (state.dropNotifications) return;
-    for (const socket of sockets) for (const [subId, subscription] of socket.data.subscriptions) {
-      if (subscription.kind === "bolt11_mint_quote" && subscription.filters.includes(quote.quote)) {
-        socket.send(JSON.stringify({ jsonrpc: "2.0", method: "subscribe", params: { subId, payload: quote } }));
-      }
-    }
-  }
+    pendingPayouts: false, holdMeltResponses: false, payoutUnavailable: false, feeReserve: 10, feeRefund: 3 };
   const keyset = { id: keys.keysetId, unit: "sat", active: true, input_fee_ppk: 0 };
   const error = (detail: string, code = 10000) => Response.json({ code, detail }, { status: 400 });
   function signOutput(output: Output, amount = output.amount) {
@@ -78,12 +65,11 @@ export function startMintFixture(options: { websocket?: boolean } = {}) {
     quote.state = "PAID";
     quote.outpoint = `${"ab".repeat(32)}:0`;
   }
-  const server = Bun.serve<SocketData>({
+  const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    async fetch(request, server) {
+    async fetch(request) {
       const path = new URL(request.url).pathname;
-      if (path === "/v1/ws" && options.websocket && server.upgrade(request, { data: { subscriptions: new Map() } })) return;
       if (path === "/v1/info") state.infoRequests++;
       if (state.unavailable) return new Response("Unavailable", { status: 503 });
       if (state.quoteStatusUnavailable && request.method === "GET" && /\/v1\/(mint|melt)\/quote\//.test(path)) {
@@ -137,7 +123,6 @@ export function startMintFixture(options: { websocket?: boolean } = {}) {
         });
         quote.state = "ISSUED";
         state.issuanceCount++;
-        notify(quote);
         return Response.json({ signatures: signed });
       }
       if (path === "/v1/melt/quote/onchain" && request.method === "POST") {
@@ -192,20 +177,6 @@ export function startMintFixture(options: { websocket?: boolean } = {}) {
       }
       return new Response("Not found", { status: 404 });
     },
-    websocket: {
-      open(socket) { sockets.add(socket); state.wsConnections++; },
-      message(socket, raw) {
-        const message = JSON.parse(String(raw)) as { id: number; method: string; params: Subscription & { subId: string } };
-        const { subId, kind, filters } = message.params;
-        if (message.method === "unsubscribe") socket.data.subscriptions.delete(subId);
-        else if (message.method === "subscribe") socket.data.subscriptions.set(subId, { kind, filters });
-        socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { status: "OK", subId } }));
-        if (message.method === "subscribe" && kind === "bolt11_mint_quote") {
-          for (const id of filters) { const quote = quotes.get(id); if (quote) notify(quote); }
-        }
-      },
-      close(socket) { sockets.delete(socket); },
-    },
   });
   return {
     url: `http://127.0.0.1:${server.port}`,
@@ -216,23 +187,13 @@ export function startMintFixture(options: { websocket?: boolean } = {}) {
       const decoded = decode(invoice);
       const quote = [...quotes.values()].find((quote) => quote.request === invoice);
       if (!quote || decoded.satoshis !== quote.amount) throw new Error("Unknown or mismatched invoice");
-      if (quote.state === "UNPAID") { quote.state = "PAID"; notify(quote); }
+      if (quote.state === "UNPAID") quote.state = "PAID";
     },
     verifies(proof: CoreProof) {
       return verifyUnblindedSignature({
         C: pointFromHex(proof.C), secret: new TextEncoder().encode(proof.secret), id: proof.id,
       }, keys.privKeys[proof.amount.toString()]!);
     },
-    closeSockets() { for (const socket of sockets) socket.close(1001, "Mint connection closed"); },
-    async stop() {
-      for (const socket of sockets) socket.terminate();
-      const stopped = server.stop(true);
-      if (!options.websocket) return stopped;
-      // Bun 1.3.14 can retain a phantom pendingWebSockets count after a
-      // server-initiated close. The listener and real sockets are closed;
-      // do not let its unresolved stop promise hang the integration harness.
-      await Promise.race([stopped, Bun.sleep(1000)]);
-      if (server.pendingRequests || sockets.size) throw new Error("Mint fixture still has active requests or sockets");
-    },
+    stop: () => server.stop(true),
   };
 }

@@ -35,7 +35,7 @@ export async function startReceivingServer(options: {
   onStatus?: (status: ReceivingStatus, message: string) => void;
   onPayout?: (message: string) => void;
   /** Internal timing overrides for controlled integration checks. */
-  timing?: { pollingIntervalMs?: number; processorIntervalMs?: number; suspensionThresholdMs?: number };
+  timing?: { pollingIntervalMs?: number; processorIntervalMs?: number };
 }) {
   const connection = openInstance(options.database, options.config);
   const { store, config } = connection;
@@ -51,11 +51,6 @@ export async function startReceivingServer(options: {
   let initializing: Promise<void> | undefined;
   let stopping: Promise<void> | undefined;
   let checking = false;
-  let generation = 0;
-  let lastTick = Date.now();
-  let lastMonotonicTick = performance.now();
-  const suspensionThresholdMs = options.timing?.suspensionThresholdMs ?? 5000;
-  let activityTimer: ReturnType<typeof setInterval> | undefined;
   const { nextPayoutIndex: _index, ...capturedConfig } = config;
   const startedAt = new Date().toISOString();
   const observation: LiveStatus = {
@@ -73,31 +68,9 @@ export async function startReceivingServer(options: {
     options.onStatus?.(next, message);
   }
 
-  function observeActivity() {
-    const now = Date.now();
-    const monotonicNow = performance.now();
-    const gap = now - lastTick;
-    const paused = gap < 0 || gap > suspensionThresholdMs || monotonicNow - lastMonotonicTick > suspensionThresholdMs;
-    lastTick = now;
-    lastMonotonicTick = monotonicNow;
-    if (!paused || abort.signal.aborted) return;
-    generation++;
-    if (!wallet || status === "incompatible") return;
-    report("reconciling", "Process pause or clock change detected. Reconciling payments before receiving or starting payouts.");
-    if (retryTimer) clearTimeout(retryTimer);
-    void beginInitialization().catch(() => {});
-  }
-
-  function canInitiate() {
-    observeActivity();
-    return status === "ready";
-  }
-
   async function handle(request: Request): Promise<Response> {
-    observeActivity();
     const url = new URL(request.url);
-    // Fly's check must survive identity changes and must not create invoices.
-    // A request after a process pause must not report the old readiness.
+    // Deployment checks must survive identity changes and create no invoices.
     if (url.pathname === "/readyz") {
       if (request.method !== "GET") return failure("Use GET for readiness checks.", 405);
       const ready = status === "ready" && !!wallet && !!capabilities;
@@ -157,7 +130,6 @@ export async function startReceivingServer(options: {
   }
 
   async function initialize() {
-    const checkingGeneration = generation;
     try {
       report(wallet ? "reconciling" : "validating", wallet
         ? "Reconciling persisted receiving and payout operations with the mints."
@@ -166,7 +138,7 @@ export async function startReceivingServer(options: {
       if (abort.signal.aborted) return;
       const opened = wallet ?? await openReceivingWallet(connection.sqlite, async () => store.getSeed(), mintUrl, options.timing, {
         config, limits: checked.payout,
-        canInitiate,
+        canInitiate: () => status === "ready",
         allocate: () => connection.sqlite.transaction(() => store.allocatePayout(config.destinationId)).immediate(),
         report: (message) => {
           observation.lastPayout = { observedAt: new Date().toISOString(), message };
@@ -177,10 +149,8 @@ export async function startReceivingServer(options: {
       wallet = opened;
       capabilities = checked;
       report("reconciling", "Reconciling persisted receiving and payout operations with the mints.");
-      await opened.reconcile();
+      await opened.reconcileStartup();
       if (abort.signal.aborted) return;
-      observeActivity();
-      if (checkingGeneration !== generation) throw new Error("Process paused during reconciliation.");
       observation.lastReconciledAt = new Date().toISOString();
       report("ready", `Receiving ready: ${checked.receiving.min}–${checked.receiving.max} sats per invoice. Automatic sweep threshold: ${config.payoutThresholdSats} sats.`);
       opened.evaluatePayouts();
@@ -211,7 +181,6 @@ export async function startReceivingServer(options: {
     if (stopping) return stopping;
     abort.abort();
     if (retryTimer) clearTimeout(retryTimer);
-    if (activityTimer) clearInterval(activityTimer);
     report("stopped", "Receiving stopped.");
     stopping = (async () => {
       await server.stop(true);
@@ -225,15 +194,8 @@ export async function startReceivingServer(options: {
   }
 
   // Diagnostics are local to the database host and expose no new public route.
-  try { statusSocket = await serveLiveStatus(options.database, () => {
-    observeActivity();
-    return { ...observation, observedAt: new Date().toISOString() };
-  }); }
+  try { statusSocket = await serveLiveStatus(options.database, () => ({ ...observation, observedAt: new Date().toISOString() })); }
   catch { options.onStatus?.(status, "Local live status unavailable; inspect serve output for readiness and payout diagnostics."); }
-  // This timer runs only while the process is awake. It neither wakes Fly nor
-  // vetoes suspension; HTTP, CLI and payout paths check the gap as well.
-  activityTimer = setInterval(observeActivity, Math.min(1000, suspensionThresholdMs / 4));
-  activityTimer.unref();
   try { await beginInitialization(); }
   catch (error) { await stop(); throw error; }
   return { port: server.port!, get status() { return status; }, stop };

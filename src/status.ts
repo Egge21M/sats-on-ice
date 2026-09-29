@@ -113,11 +113,11 @@ export function formatStatus(status: WalletStatus): string {
       `  Readiness: ${live.readiness} (server observation ${live.readinessObservedAt}); ${safe(live.message)}`);
     if (live.lastInvoiceError) lines.push(`  Last invoice error (${live.lastInvoiceError.observedAt}): ${safe(live.lastInvoiceError.message)}`);
     if (live.lastPayout) lines.push(`  Last payout diagnostic (${live.lastPayout.observedAt}): ${safe(live.lastPayout.message)}`);
-    lines.push(`  Last successful payment reconciliation: ${live.lastReconciledAt ?? "not yet completed"}.`,
-      "  Readiness records capability validation and payment reconciliation; it is not a fresh probe or continuous processor-health guarantee.");
+    lines.push(`  Startup payment reconciliation: ${live.lastReconciledAt ?? "not yet completed"}.`,
+      "  Readiness records startup capability validation and payment reconciliation; it is not a fresh probe or continuous processor-health guarantee.");
   } else {
     lines.push("Running server configuration and readiness: unavailable (no local status response).",
-      "  Local records and this command's environment do not establish whether a server is running, stopped or suspended.");
+      "  Local records and this command's environment do not establish whether a server is running.");
   }
   if (!status.walletAvailable) lines.push("Wallet balances and operations: unavailable (Coco repositories have not been initialized).");
   for (const mint of [...status.mints].sort((a, b) => Number(b.selected) - Number(a.selected))) {
@@ -139,6 +139,6 @@ export function formatStatus(status: WalletStatus): string {
     }
   }
   lines.push("Balances belong to mints, not identities. Status does not claim ecash, move funds, allocate indices or run recovery.",
-    "Suspension can defer claims and payouts until a request or explicit wake. Local status success does not establish payment readiness.");
+    "Claims and payouts wait while the server is stopped. Start serve to recover pending payments. Local status success does not establish payment readiness.");
   return lines.join("\n");
 }
