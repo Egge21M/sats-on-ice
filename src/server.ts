@@ -69,8 +69,7 @@ export async function startReceivingServer(options: {
 
   async function handle(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    // Fly's check must survive identity changes and must not create invoices.
-    // This reports existing startup readiness, not a fresh reconciliation.
+    // Deployment checks must survive identity changes and create no invoices.
     if (url.pathname === "/readyz") {
       if (request.method !== "GET") return failure("Use GET for readiness checks.", 405);
       const ready = status === "ready" && !!wallet && !!capabilities;

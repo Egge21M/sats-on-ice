@@ -102,7 +102,7 @@ Coco's documented Bun wiring is a `Database` from `bun:sqlite`, then `new Sqlite
 
 ## Username scope and runtime domain
 
-The interview settled a table mapping username to destination xpub and next payout index, with the public domain determined at runtime, then narrowed v1 to a single configured username per server. One owner, one configured mint, one accumulated balance, and one destination wallet remain. The selected proxy contract preserves the public hostname in `Host`, from which the application builds HTTPS callbacks; Fly.io was subsequently selected as the deployment target. The multi-username isolation alternatives below are deferred research, not v1 requirements.
+The interview settled a table mapping username to destination xpub and next payout index, with the public domain determined at runtime, then narrowed v1 to a single configured username per server. One owner, one configured mint, one accumulated balance, and one destination wallet remain. The selected proxy contract preserves the public hostname in `Host`, from which the application builds HTTPS callbacks; the current deployment model supports a regular server, with Fly.io as an optional hosting example. The multi-username isolation alternatives below are deferred research, not v1 requirements.
 
 ### Coco balance isolation
 

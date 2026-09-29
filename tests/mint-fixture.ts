@@ -34,9 +34,9 @@ export function startMintFixture() {
       "9": { supported: true },
     },
   };
-  const state = { unavailable: false, issuancePaused: false, invoiceAmountOffset: 0, invoiceAgeSeconds: 0,
-    omitInvoiceExpiry: false, issuanceCount: 0, issuanceAttempts: 0, quoteRequests: 0, infoRequests: 0, meltRequests: 0, swapRequests: 0,
-    pendingPayouts: false, payoutUnavailable: false, feeReserve: 10, feeRefund: 3 };
+  const state = { unavailable: false, quoteStatusUnavailable: false, issuancePaused: false, invoiceAmountOffset: 0, invoiceAgeSeconds: 0,
+    omitInvoiceExpiry: false, issuanceCount: 0, issuanceAttempts: 0, quoteRequests: 0, infoRequests: 0, meltRequests: 0, meltAttempts: 0, swapRequests: 0,
+    pendingPayouts: false, holdMeltResponses: false, payoutUnavailable: false, feeReserve: 10, feeRefund: 3 };
   const keyset = { id: keys.keysetId, unit: "sat", active: true, input_fee_ppk: 0 };
   const error = (detail: string, code = 10000) => Response.json({ code, detail }, { status: 400 });
   function signOutput(output: Output, amount = output.amount) {
@@ -72,6 +72,9 @@ export function startMintFixture() {
       const path = new URL(request.url).pathname;
       if (path === "/v1/info") state.infoRequests++;
       if (state.unavailable) return new Response("Unavailable", { status: 503 });
+      if (state.quoteStatusUnavailable && request.method === "GET" && /\/v1\/(mint|melt)\/quote\//.test(path)) {
+        return new Response("Quote checks unavailable", { status: 503 });
+      }
       if (path === "/v1/info") return Response.json(info);
       if (path === "/v1/keysets") return Response.json({ keysets: [keyset] });
       if (path === "/v1/keys" || path === `/v1/keys/${keys.keysetId}`) {
@@ -147,6 +150,7 @@ export function startMintFixture() {
         return Response.json({ signatures: outputs.map((output) => signOutput(output)) });
       }
       if (path === "/v1/melt/onchain" && request.method === "POST") {
+        state.meltAttempts++;
         const body = await request.json() as { quote: string; fee_index: number; inputs: Input[]; outputs: Output[] };
         const quote = melts.get(body.quote);
         const fee = quote?.fee_options.find((f) => f.fee_index === body.fee_index);
@@ -158,6 +162,7 @@ export function startMintFixture() {
         body.inputs.forEach((p) => pending.add(p.secret));
         submissions.push({ quote, inputs: body.inputs, outputs: body.outputs ?? [] });
         if (!state.pendingPayouts) settle(quote.quote);
+        while (state.holdMeltResponses && !request.signal.aborted) await Bun.sleep(20);
         return Response.json(quote);
       }
       if (path === "/v1/restore" && request.method === "POST") {

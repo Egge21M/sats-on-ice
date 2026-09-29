@@ -104,6 +104,7 @@ export function startPayouts(options: {
   }
 
   async function sweep() {
+    if (stopped) return;
     const proofs = await repo.proofRepository.getAvailableProofs(config.mintUrl, { unit: "sat" });
     const balance = proofs.reduce((sum, proof) => sum + proof.amount.toBigInt(), 0n);
     if (balance < BigInt(config.payoutThresholdSats) || stopped) return;
@@ -116,7 +117,10 @@ export function startPayouts(options: {
     const cashu = await options.fees.wallet(config.mintUrl);
     const operation = await prepare(address, balance, cashu.getFeesForProofs(proofs).toBigInt());
     if (!operation) return;
-    if (stopped) { await wallet.ops.melt.cancel(operation.id, "Server stopped before payout submission."); return; }
+    if (stopped) {
+      await wallet.ops.melt.cancel(operation.id, "Server stopped before payout submission.");
+      return;
+    }
     report(`Payout ${operation.id}: ${operation.amount} sats to ${address}; fee option ${("feeIndex" in operation.methodData ? operation.methodData.feeIndex : "unknown")}, reserve ${operation.fee_reserve} sats, pre-swap fee ${operation.swap_fee} sats.`);
     await wallet.ops.melt.execute(operation.id);
     // No application replay or reclaim after an execution failure.

@@ -30,6 +30,22 @@ test("private local listener reports captured state, survives another listener a
   expect(await readLiveStatus(database)).toBeNull();
 });
 
+test("independent CLI processes reliably read the live status listener", async () => {
+  const listener = await serveLiveStatus(database, () => snapshot);
+  const module = new URL("../src/live-status.ts", import.meta.url).pathname;
+  try {
+    for (let i = 0; i < 12; i++) {
+      const child = Bun.spawn([process.execPath, "-e",
+        `const { readLiveStatus } = await import(process.argv[1]); console.log(JSON.stringify(await readLiveStatus(process.argv[2])));`,
+        module, database], { stdout: "pipe", stderr: "pipe" });
+      const output = await new Response(child.stdout).text();
+      expect(await child.exited).toBe(0);
+      expect(JSON.parse(output)).toEqual(snapshot);
+    }
+  } finally { await listener.close(); }
+  // Allow twelve cold Bun startups; each socket read still times out in two seconds.
+}, 15_000);
+
 test("a hung local listener times out and an invalid response never establishes readiness", async () => {
   const listener = await serveLiveStatus(database, () => snapshot);
   await listener.close();
