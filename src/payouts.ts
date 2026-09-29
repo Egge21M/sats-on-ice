@@ -35,7 +35,6 @@ export function startPayouts(options: {
   limits: AmountLimits;
   allocate: () => { address: string; index: number };
   report: (message: string) => void;
-  canInitiate: () => boolean;
 }) {
   const { wallet, repo, config, limits, report } = options;
   let stopped = false;
@@ -105,10 +104,10 @@ export function startPayouts(options: {
   }
 
   async function sweep() {
-    if (!options.canInitiate()) return;
+    if (stopped) return;
     const proofs = await repo.proofRepository.getAvailableProofs(config.mintUrl, { unit: "sat" });
     const balance = proofs.reduce((sum, proof) => sum + proof.amount.toBigInt(), 0n);
-    if (balance < BigInt(config.payoutThresholdSats) || stopped || !options.canInitiate()) return;
+    if (balance < BigInt(config.payoutThresholdSats) || stopped) return;
     const fingerprint = new Bun.CryptoHasher("sha256").update(JSON.stringify(proofs.map((proof) => proof.secret).sort())).digest("hex");
     // Failed attempts do not burn indices repeatedly for an unchanged proof set.
     if (fingerprint === lastProofs) return;
@@ -118,7 +117,7 @@ export function startPayouts(options: {
     const cashu = await options.fees.wallet(config.mintUrl);
     const operation = await prepare(address, balance, cashu.getFeesForProofs(proofs).toBigInt());
     if (!operation) return;
-    if (stopped || !options.canInitiate()) {
+    if (stopped) {
       await wallet.ops.melt.cancel(operation.id, "Server stopped before payout submission.");
       return;
     }
@@ -153,5 +152,5 @@ export function startPayouts(options: {
     wallet.on("melt-op:rolled-back", ({ operation }) => progress(operation)),
   ];
   request();
-  return { request, async stop() { stopped = true; unsubscribe.forEach((off) => off()); await running; } };
+  return { async stop() { stopped = true; unsubscribe.forEach((off) => off()); await running; } };
 }

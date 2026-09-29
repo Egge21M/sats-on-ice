@@ -4,7 +4,7 @@ Implementation of [issue #4](https://github.com/Egge21M/sats-on-ice/issues/4). F
 
 ## Initiation and persistence
 
-The active server evaluates spendable sat proofs after startup reconciliation, after a mint operation finalizes, and after payout settlement. New initiation is gated while the server is unready. Coco's available-proof repository excludes inflight and reserved proofs. Eligibility is measured before fees using `balance >= threshold`. A coalescing queue serializes allocation, quoting, preparation and submission. Coco tracks pending settlement independently, so fresh unreserved funds can fund the next payout.
+The active server evaluates spendable sat proofs after wallet initialization and mint registration, after a mint operation finalizes, and after payout settlement. Recovery and pending-operation checks belong to Coco; no separate reconciliation gate delays new payouts from available proofs. Coco's available-proof repository excludes inflight and reserved proofs. Eligibility is measured before fees using `balance >= threshold`. A coalescing queue serializes allocation, quoting, preparation and submission. Coco tracks pending settlement independently, so fresh unreserved funds can fund the next payout.
 
 An IMMEDIATE SQLite transaction derives `/0/index` and increments the destination's next payout index. It commits before mint communication; no failure path decrements it. Exhausted indices are refused. The transaction is separate from Coco's later operation transactions. A crash between allocation and preparation can leave a gap. No Bitcoin address history is queried.
 

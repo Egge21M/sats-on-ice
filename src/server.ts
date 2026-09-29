@@ -6,7 +6,7 @@ import { openInstance } from "./setup.ts";
 import { serveLiveStatus, type LiveStatus } from "./live-status.ts";
 
 type ReceivingWallet = Awaited<ReturnType<typeof openReceivingWallet>>;
-export type ReceivingStatus = "validating" | "retrying" | "reconciling" | "ready" | "incompatible" | "stopped";
+export type ReceivingStatus = "validating" | "retrying" | "ready" | "incompatible" | "stopped";
 
 function json(value: unknown, status = 200) {
   return Response.json(value, { status, headers: {
@@ -50,13 +50,12 @@ export async function startReceivingServer(options: {
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let initializing: Promise<void> | undefined;
   let stopping: Promise<void> | undefined;
-  let checking = false;
   const { nextPayoutIndex: _index, ...capturedConfig } = config;
   const startedAt = new Date().toISOString();
   const observation: LiveStatus = {
     startedAt, observedAt: startedAt, config: capturedConfig,
     readiness: status, readinessObservedAt: startedAt, message: "Starting receiving.",
-    lastPayout: null, lastInvoiceError: null, lastReconciledAt: null,
+    lastPayout: null, lastInvoiceError: null,
   };
   let statusSocket: Awaited<ReturnType<typeof serveLiveStatus>> | undefined;
 
@@ -131,50 +130,33 @@ export async function startReceivingServer(options: {
 
   async function initialize() {
     try {
-      report(wallet ? "reconciling" : "validating", wallet
-        ? "Reconciling persisted receiving and payout operations with the mints."
-        : "Checking mint capabilities and starting receiving.");
+      report("validating", "Checking mint capabilities and starting receiving.");
       const checked = await fetchMintCapabilities(mintUrl, abort.signal);
       if (abort.signal.aborted) return;
-      const opened = wallet ?? await openReceivingWallet(connection.sqlite, async () => store.getSeed(), mintUrl, options.timing, {
+      const opened = await openReceivingWallet(connection.sqlite, async () => store.getSeed(), mintUrl, options.timing, {
         config, limits: checked.payout,
-        canInitiate: () => status === "ready",
         allocate: () => connection.sqlite.transaction(() => store.allocatePayout(config.destinationId)).immediate(),
         report: (message) => {
           observation.lastPayout = { observedAt: new Date().toISOString(), message };
           options.onPayout?.(message);
         },
       });
-      if (abort.signal.aborted) { if (!wallet) await opened.close(); return; }
+      if (abort.signal.aborted) { await opened.close(); return; }
       wallet = opened;
       capabilities = checked;
-      report("reconciling", "Reconciling persisted receiving and payout operations with the mints.");
-      await opened.reconcileStartup();
-      if (abort.signal.aborted) return;
-      observation.lastReconciledAt = new Date().toISOString();
       report("ready", `Receiving ready: ${checked.receiving.min}–${checked.receiving.max} sats per invoice. Automatic sweep threshold: ${config.payoutThresholdSats} sats.`);
-      opened.evaluatePayouts();
     } catch (error) {
       if (abort.signal.aborted) return;
       if (error instanceof UserError) {
         report("incompatible", error.message);
         throw error;
       }
-      report(wallet ? "reconciling" : "retrying", wallet
-        ? "Payment reconciliation unavailable. Retrying; local balances are not freshly reconciled."
-        : "Receiving unavailable. Retrying mint validation and wallet startup.");
+      report("retrying", "Receiving unavailable. Retrying mint validation and wallet startup.");
       retryTimer = setTimeout(() => {
         // Permanent failures discovered after a retry remain unready until restart.
-        void beginInitialization().catch(() => {});
+        initializing = initialize().catch(() => {});
       }, options.retryDelayMs ?? 5000);
     }
-  }
-
-  function beginInitialization(): Promise<void> {
-    if (checking || abort.signal.aborted) return initializing ?? Promise.resolve();
-    checking = true;
-    initializing = initialize().finally(() => { checking = false; });
-    return initializing;
   }
 
   function stop(): Promise<void> {
@@ -196,7 +178,8 @@ export async function startReceivingServer(options: {
   // Diagnostics are local to the database host and expose no new public route.
   try { statusSocket = await serveLiveStatus(options.database, () => ({ ...observation, observedAt: new Date().toISOString() })); }
   catch { options.onStatus?.(status, "Local live status unavailable; inspect serve output for readiness and payout diagnostics."); }
-  try { await beginInitialization(); }
+  initializing = initialize();
+  try { await initializing; }
   catch (error) { await stop(); throw error; }
   return { port: server.port!, get status() { return status; }, stop };
 }

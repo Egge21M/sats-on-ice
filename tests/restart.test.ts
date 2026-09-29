@@ -45,27 +45,28 @@ async function eventually(check: () => Promise<boolean> | boolean, description: 
   throw new Error(`Timed out: ${description}`);
 }
 
-test("cold start stays unready when persisted payment reconciliation fails, then claims and sweeps once", async () => {
+test("startup remains ready through a quote-check outage and Coco later claims and sweeps once", async () => {
   await start();
   const payment = await invoice(1000);
   await service!.stop();
   mint.pay(payment);
   mint.state.quoteStatusUnavailable = true;
   await start();
-  expect((await request("/readyz")).status).toBe(503);
-  expect((await inspect()).live?.readiness).toBe("reconciling");
-  expect((await inspect()).live?.lastReconciledAt).toBeNull();
+  expect((await request("/readyz")).status).toBe(200);
+  expect((await inspect()).live?.readiness).toBe("ready");
+  // New invoices remain available while Coco retries the saved payment.
+  await invoice(21);
+  expect((await inspect()).mints[0]!.spendableSats).toBe("0");
   expect((await inspect()).lastActiveIdentity.nextPayoutIndex).toBe(0);
   expect(mint.state.meltRequests).toBe(0);
   mint.state.quoteStatusUnavailable = false;
-  await eventually(() => service!.status === "ready", "reconciliation becomes ready");
-  await eventually(() => mint.state.meltRequests === 1, "payout after reconciliation");
+  await eventually(() => mint.state.meltRequests === 1, "payout after Coco claims the saved receipt");
   expect(mint.state.issuanceCount).toBe(1);
   expect(mint.submissions[0]!.quote.request).toBe(FIRST_ADDRESS);
   expect((await inspect()).lastActiveIdentity.nextPayoutIndex).toBe(1);
 }, 20_000);
 
-test("a paid quote persisted before operation preparation stays unready until Coco claims it", async () => {
+test("a paid quote without a prepared operation is claimed by Coco without blocking readiness", async () => {
   await start();
   await service!.stop(); service = undefined;
   const connection = openInstance(database, config());
@@ -78,10 +79,11 @@ test("a paid quote persisted before operation preparation stays unready until Co
   mint.pay(payment!);
   mint.state.issuancePaused = true;
   await start();
-  expect((await request("/readyz")).status).toBe(503);
-  expect((await inspect()).live?.lastReconciledAt).toBeNull();
+  expect((await request("/readyz")).status).toBe(200);
+  expect((await inspect()).live?.readiness).toBe("ready");
+  expect((await inspect()).mints[0]!.spendableSats).toBe("0");
   mint.state.issuancePaused = false;
-  await eventually(() => service!.status === "ready", "Coco claims the quote without an application operation");
+  await eventually(async () => (await inspect()).mints[0]!.spendableSats === "21", "Coco claims the quote without an application operation");
   expect(mint.state.issuanceCount).toBe(1);
   expect((await inspect()).mints[0]!.spendableSats).toBe("21");
 }, 20_000);
@@ -134,6 +136,7 @@ test("full shutdown and new processes recover receipts and payouts settled while
 
     process = await spawnServer();
     expect((await inspect()).live!.startedAt).not.toBe(secondStart);
+    await eventually(async () => (await inspect()).mints[0]!.payouts[0]?.state === "finalized", "Coco settles the payout after restart");
     const recovered = await inspect();
     expect(recovered.mints[0]!.payouts[0]!.state).toBe("finalized");
     expect(recovered.mints[0]!.spendableSats).toBe("3");

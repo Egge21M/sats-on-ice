@@ -17,7 +17,7 @@ afterEach(() => rmSync(directory, { recursive: true, force: true }));
 const observedAt = new Date().toISOString();
 const snapshot: LiveStatus = { startedAt: observedAt, observedAt, readinessObservedAt: observedAt,
   config: { ...SETUP, destinationKey: XPUB, identityId: 1, destinationId: 1 },
-  readiness: "retrying", message: "Retrying mint validation.", lastPayout: null, lastInvoiceError: null, lastReconciledAt: null };
+  readiness: "retrying", message: "Retrying mint validation.", lastPayout: null, lastInvoiceError: null };
 
 test("private local listener reports captured state, survives another listener attempt and disappears on close", async () => {
   const listener = await serveLiveStatus(database, () => snapshot);
@@ -43,7 +43,8 @@ test("independent CLI processes reliably read the live status listener", async (
       expect(JSON.parse(output)).toEqual(snapshot);
     }
   } finally { await listener.close(); }
-});
+  // Allow twelve cold Bun startups; each socket read still times out in two seconds.
+}, 15_000);
 
 test("a hung local listener times out and an invalid response never establishes readiness", async () => {
   const listener = await serveLiveStatus(database, () => snapshot);

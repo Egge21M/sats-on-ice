@@ -6,9 +6,8 @@ import { activeConfigSchema } from "./config.ts";
 const liveStatusSchema = z.object({
   startedAt: z.string(), observedAt: z.string(),
   config: activeConfigSchema.omit({ nextPayoutIndex: true }),
-  readiness: z.enum(["validating", "retrying", "reconciling", "ready", "incompatible", "stopped"]),
+  readiness: z.enum(["validating", "retrying", "ready", "incompatible", "stopped"]),
   readinessObservedAt: z.string(), message: z.string(),
-  lastReconciledAt: z.string().nullable(),
   lastPayout: z.object({ observedAt: z.string(), message: z.string() }).nullable(),
   lastInvoiceError: z.object({ observedAt: z.string(), message: z.string() }).nullable(),
 });

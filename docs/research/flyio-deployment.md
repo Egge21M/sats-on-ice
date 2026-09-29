@@ -18,7 +18,7 @@ The current template uses `auto_stop_machines = "off"`, `auto_start_machines = t
 
 Background mint traffic does not count toward proxy load. Once an invoice has been returned, the payer sends payment to the mint directly; that payment does not start a stopped Sats on Ice process. Choosing idle stops therefore accepts delayed ecash claims and payout processing until an app request or explicit start. The application adds no stop scheduler or background-work veto.
 
-Memory-preserving suspension is unsupported. Configure a full stop so the old process exits, SQLite persists wallet state and the next start constructs a new Coco manager. See the [recovery guide](../design/payment-recovery.md) for the exact startup checks and dependency limitations.
+Memory-preserving suspension is unsupported. Configure a full stop so the old process exits, SQLite persists wallet state and the next start constructs a new Coco manager. See the [recovery guide](../design/payment-recovery.md) for Coco's startup lifecycle and dependency limitations.
 
 ## HTTPS and runtime domain
 

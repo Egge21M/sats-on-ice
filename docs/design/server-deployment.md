@@ -29,9 +29,9 @@ For this example, omit `SOI_DATABASE`, `SOI_HOSTNAME` and `SOI_PORT` from `.env`
 
 ## Networking and recovery
 
-Preserve the public `Host` header through the HTTPS reverse proxy so `alice` on `pay.example` receives at `alice@pay.example`. When a proxy connects over a container network, bind `SOI_HOSTNAME=0.0.0.0`; the image already does this. Use `GET /readyz` to check completion of startup validation and payment reconciliation. It returns no wallet details and is not a continuous mint-health probe.
+Preserve the public `Host` header through the HTTPS reverse proxy so `alice` on `pay.example` receives at `alice@pay.example`. When a proxy connects over a container network, bind `SOI_HOSTNAME=0.0.0.0`; the image already does this. Use `GET /readyz` to check completion of capability validation and wallet initialization. It returns no wallet details and is not a continuous mint-health probe.
 
-Retain the complete database and runtime environment through every shutdown. Startup uses Coco to recover pending payments before allowing new invoices and sweeps. Claims and payouts wait while the service is stopped, even if an already-issued invoice is paid directly at the mint. See [payment recovery](payment-recovery.md) for startup retries, shutdown behavior and the known Coco polling limitation.
+Retain the complete database and runtime environment through every shutdown. Startup initializes Coco with its default recovery and workers, then enables receiving and evaluates available funds. Recovery may continue after the service becomes ready. Claims and payouts wait while the service is stopped, even if an already-issued invoice is paid directly at the mint. See [payment recovery](payment-recovery.md) for startup retries, shutdown behavior and the known Coco polling limitation.
 
 Take [complete database backups](wallet-backup.md) and keep a copy off the server. Do not run another wallet server against the same database or a copied wallet. Multiple containers and replicated volumes are not a supported failover setup.
 
